@@ -69,15 +69,16 @@ browser-wide SSO cookie. Two consequences:
 - Aside browser profiles do **not** help: they share one Google cookie jar, so every
   profile presents the same default Google account.
 
-So a second Kiro account needs the Google account switched first:
+So a second Kiro account needs the Google account switched first. This sequence
+works:
 
-1. In the browser, sign out of Kiro: `https://app.kiro.dev/home` → account menu →
-   **Sign Out**.
-2. Sign out of Google, or switch the default account, at
-   `https://accounts.google.com/Logout`, then sign in as the account you want.
-   On these accounts Google requires a **passkey** (biometric/hardware), so this
-   step cannot be automated — it needs a human at the machine.
-3. Run the scripted login below and it will bind that account.
+1. Sign out of Kiro: `https://app.kiro.dev/home` → account menu → **Sign Out**.
+2. Sign in to Google as the target account at `https://accounts.google.com/`.
+   These accounts use a **passkey**, so this step needs a human at the machine
+   (Touch ID); it cannot be automated.
+3. Confirm the switch stuck — `https://app.kiro.dev/signin` should say
+   "currently signed in via Google as: <target>".
+4. Run the scripted login; it binds whichever identity Kiro now holds.
 
 All three Kiro auth methods were exercised and all three resolve to whichever
 identity the browser/AWS session already holds:
