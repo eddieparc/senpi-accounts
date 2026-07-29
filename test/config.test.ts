@@ -83,7 +83,10 @@ describe("loadProviderFragments", () => {
 				apiKey: "!echo test-key",
 				authHeader: true,
 				headers: { "x-api-key": "!echo test-key" },
-				accounts: [{ label: "work" }, { label: "personal" }],
+				accounts: [
+					{ id: "work", label: "Work", apiKey: "$CCAPI_WORK_KEY" },
+					{ id: "personal", label: "Personal", headers: { "x-api-key": "!printf personal" } },
+				],
 			},
 		});
 		const result = load(dir);
@@ -98,7 +101,10 @@ describe("loadProviderFragments", () => {
 			apiKey: "!echo test-key",
 		});
 		expect(entry?.fields).not.toHaveProperty("accounts");
-		expect(entry?.accounts).toEqual([{ label: "work" }, { label: "personal" }]);
+		expect(entry?.accounts).toEqual([
+			{ id: "work", label: "Work", apiKey: "$CCAPI_WORK_KEY" },
+			{ id: "personal", label: "Personal", headers: { "x-api-key": "!printf personal" } },
+		]);
 	});
 
 	it("loads every .json file sorted by filename", () => {
@@ -368,6 +374,61 @@ describe("loadProviderFragments", () => {
 		expect(result.errors).toEqual([]);
 		expect(result.fragments[0]?.providers[0]?.fields).toEqual(fragment.local);
 		expect(readFileSync(filePath, "utf8")).toBe(JSON.stringify(fragment));
+	});
+
+	it("rejects a literal credential in an account while retaining the existing inline-secret diagnostic", () => {
+		const dir = makeDir("providers.d");
+		const filePath = writeFragment(dir, "10-account-inline-key.json", {
+			provider: {
+				accounts: [
+					{
+						id: "personal",
+						label: "Personal",
+						apiKey: "sk-ant-api03-FAKE_ACCOUNT_CREDENTIAL_1234567890",
+					},
+				],
+			},
+		});
+		const result = load(dir);
+		const message = result.errors[0]?.message ?? "";
+
+		expect(result.fragments[0]?.providers).toEqual([]);
+		expect(message).toContain(filePath);
+		expect(message).toContain("accounts[0].apiKey");
+		expect(message).toContain("inline credential");
+		expect(message).toContain("!command");
+		expect(message).not.toContain("sk-ant-api03-FAKE_ACCOUNT_CREDENTIAL_1234567890");
+	});
+
+	it("rejects an account credential that is not a config-value reference", () => {
+		const dir = makeDir("providers.d");
+		const filePath = writeFragment(dir, "10-account-literal.json", {
+			provider: {
+				accounts: [{ id: "personal", label: "Personal", apiKey: "local-development-key" }],
+			},
+		});
+		const result = load(dir);
+		const message = result.errors[0]?.message ?? "";
+
+		expect(result.fragments[0]?.providers).toEqual([]);
+		expect(message).toContain(filePath);
+		expect(message).toContain("personal");
+		expect(message).toContain("apiKey");
+		expect(message).toContain("!command");
+		expect(message).toContain("$ENV");
+	});
+
+	it("rejects an account that would duplicate the base entry", () => {
+		const dir = makeDir("providers.d");
+		const filePath = writeFragment(dir, "10-duplicate-account.json", {
+			provider: { accounts: [{ id: "duplicate", label: "Duplicate" }] },
+		});
+		const result = load(dir);
+		const message = result.errors[0]?.message ?? "";
+
+		expect(result.fragments[0]?.providers).toEqual([]);
+		expect(message).toContain(filePath);
+		expect(message).toContain("duplicate");
 	});
 
 	it("does not accept an oauth block that could be emitted to senpi", () => {

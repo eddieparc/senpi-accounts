@@ -11,9 +11,35 @@ const SENPI_CLI = join(REPOSITORY_ROOT, "node_modules", "@code-yeongyu", "senpi"
 const EXTENSION_ENTRY = join(REPOSITORY_ROOT, "dist", "index.js");
 const PROVIDER_ID = "omo-e2e-anthropic";
 const MODEL_ID = "omo-e2e-model";
+const MULTI_ACCOUNT_PROVIDER_ID = "omo-e2e-accounts";
+const MULTI_ACCOUNT_MODEL_ID = "omo-e2e-account-model";
 const MOCK_API_KEY_ENV = "SENPI_ACCOUNTS_E2E_MOCK_KEY";
 const MOCK_API_KEY = "e2e-placeholder-api-key";
-const REQUEST_TIMEOUT_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+const SENPI_STARTUP_ARGS = [
+	"--no-extensions",
+	"--no-skills",
+	"--no-prompt-templates",
+	"--no-themes",
+	"--no-context-files",
+	"--offline",
+];
+// Keep the pre-existing inference invocation order intact. The old e2e probe
+// is a regression lock; only the account-listing invocation needs new args.
+const INFERENCE_ARGS = [
+	...SENPI_STARTUP_ARGS,
+	"--no-tools",
+	"--extension",
+	EXTENSION_ENTRY,
+	"--provider",
+	PROVIDER_ID,
+	"--model",
+	MODEL_ID,
+	"--no-session",
+	"-p",
+	"Reply with exactly: OMOPROBE",
+];
+const LIST_MODELS_ARGS = [...SENPI_STARTUP_ARGS, "--extension", EXTENSION_ENTRY, "--list-models"];
 
 interface CapturedRequest {
 	method: string | undefined;
@@ -266,35 +292,51 @@ function writeProviderFragment(directory: string, baseUrl: string): void {
 	);
 }
 
-function runSenpi(root: string, providersDirectory: string): Promise<CommandResult> {
+function writeMultiAccountProviderFragment(directory: string, baseUrl: string): void {
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(
+		join(directory, "20-omo-e2e-accounts.json"),
+		JSON.stringify({
+			[MULTI_ACCOUNT_PROVIDER_ID]: {
+				name: "OMO E2E account mock",
+				baseUrl,
+				api: "anthropic-messages",
+				authHeader: false,
+				models: [
+					{
+						id: MULTI_ACCOUNT_MODEL_ID,
+						name: "OMO E2E account model",
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 200_000,
+						maxTokens: 1024,
+					},
+				],
+				accounts: [
+					{ id: "first", label: "First", apiKey: "!printf account-one" },
+					{ id: "second", label: "Second", apiKey: "!printf account-two" },
+				],
+			},
+		}),
+	);
+}
+
+function runSenpi(
+	root: string,
+	providersDirectory: string,
+	argumentsForSenpi: readonly string[] = INFERENCE_ARGS,
+): Promise<CommandResult> {
 	if (!existsSync(EXTENSION_ENTRY)) {
 		throw new Error(`Missing built extension at ${EXTENSION_ENTRY}; run npm run build before this E2E test`);
 	}
 
 	const child = spawn(
 		process.execPath,
-		[
-			SENPI_CLI,
-			"--no-extensions",
-			"--no-skills",
-			"--no-prompt-templates",
-			"--no-themes",
-			"--no-context-files",
-			"--offline",
-			"--no-tools",
-			"--extension",
-			EXTENSION_ENTRY,
-			"--provider",
-			PROVIDER_ID,
-			"--model",
-			MODEL_ID,
-			"--no-session",
-			"-p",
-			"Reply with exactly: OMOPROBE",
-		],
+		[SENPI_CLI, ...argumentsForSenpi],
 		{
 			cwd: root,
-			stdio: ["ignore", "pipe", "pipe"],
+			stdio: ["pipe", "pipe", "pipe"],
 			env: {
 				HOME: root,
 				NO_COLOR: "1",
@@ -307,6 +349,7 @@ function runSenpi(root: string, providersDirectory: string): Promise<CommandResu
 			},
 		},
 	);
+	child.stdin.end();
 
 	const stdout: Buffer[] = [];
 	const stderr: Buffer[] = [];
@@ -392,6 +435,23 @@ describe("provider registration against a local Anthropic Messages server", () =
 				expect(JSON.parse(request.body)).toMatchObject({ model: MODEL_ID, stream: true });
 			},
 		);
+	}, REQUEST_TIMEOUT_MS + 5_000);
+
+	it("makes two declarative account providers available to the real senpi CLI", async () => {
+		const root = mkdtempSync(join(tmpdir(), "senpi-accounts-multi-account-e2e-"));
+		const providersDirectory = join(root, "providers.d");
+		try {
+			writeMultiAccountProviderFragment(providersDirectory, "http://127.0.0.1:9");
+			const result = await runSenpi(root, providersDirectory, LIST_MODELS_ARGS);
+
+			expect(result.exitCode, result.stderr).toBe(0);
+			expect(result.signal).toBeNull();
+			expect(result.stdout).toContain(MULTI_ACCOUNT_PROVIDER_ID);
+			expect(result.stdout).toContain(`${MULTI_ACCOUNT_PROVIDER_ID}-account-2`);
+			expect(result.stdout).toContain(MULTI_ACCOUNT_MODEL_ID);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	}, REQUEST_TIMEOUT_MS + 5_000);
 
 	it("documents the /v1 baseUrl pitfall by rejecting the doubled Messages path", async () => {

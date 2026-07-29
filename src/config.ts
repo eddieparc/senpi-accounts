@@ -13,10 +13,23 @@ export interface LoadFragmentsOptions {
 	homeDir?: string;
 }
 
+export interface ProviderAccount {
+	id: string;
+	label: string;
+	apiKey?: string;
+	headers?: Record<string, string>;
+	upstreamModelIdSuffix?: string;
+}
+
 export interface ProviderFragmentEntry {
 	providerId: string;
 	fields: ProviderConfig;
-	accounts?: unknown[];
+	accounts?: ProviderAccount[];
+}
+
+export interface RegisteredProviderEntry {
+	providerId: string;
+	fields: ProviderConfig;
 }
 
 export interface ProviderFragment {
@@ -74,6 +87,8 @@ const MODEL_FIELDS = new Set([
 	"extraBody",
 	"compat",
 ]);
+
+const ACCOUNT_FIELDS = new Set(["id", "label", "apiKey", "headers", "upstreamModelIdSuffix"]);
 
 function pathKind(path: string): "directory" | "other" | "missing" {
 	try {
@@ -186,6 +201,105 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 
 function isStringOrNullRecord(value: unknown): boolean {
 	return isObject(value) && Object.values(value).every((entry) => typeof entry === "string" || entry === null);
+}
+
+function isConfigValueReference(value: string): boolean {
+	return value.startsWith("!") || /^\$[A-Za-z_][A-Za-z0-9_]*$/u.test(value) || /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/u.test(value);
+}
+
+function credentialReferenceError(
+	filePath: string,
+	providerId: string,
+	accountId: string,
+	location: string,
+): FragmentLoadError {
+	return errorFor(
+		filePath,
+		`provider ${providerId} account ${accountId} ${location} must be a config-value reference; use a !command or $ENV reference instead`,
+	);
+}
+
+function validateCredentialReferences(
+	filePath: string,
+	providerId: string,
+	accountId: string,
+	fields: Record<string, unknown>,
+): FragmentLoadError | undefined {
+	if (typeof fields.apiKey === "string" && !isConfigValueReference(fields.apiKey)) {
+		return credentialReferenceError(filePath, providerId, accountId, "apiKey");
+	}
+	if (isObject(fields.headers)) {
+		for (const [headerName, headerValue] of Object.entries(fields.headers)) {
+			if (typeof headerValue === "string" && !isConfigValueReference(headerValue)) {
+				return credentialReferenceError(filePath, providerId, accountId, `header ${headerName}`);
+			}
+		}
+	}
+	return undefined;
+}
+
+function validateAccount(
+	filePath: string,
+	providerId: string,
+	index: number,
+	value: unknown,
+): { account?: ProviderAccount; error?: FragmentLoadError } {
+	if (!isObject(value)) {
+		return { error: errorFor(filePath, `provider ${providerId} accounts[${index}] must be a JSON object`) };
+	}
+	for (const key of Object.keys(value)) {
+		if (!ACCOUNT_FIELDS.has(key)) {
+			return { error: errorFor(filePath, `provider ${providerId} accounts[${index}] unknown field ${key}`) };
+		}
+	}
+	if (typeof value.id !== "string") {
+		return { error: errorFor(filePath, `provider ${providerId} accounts[${index}].id must be a string`) };
+	}
+	if (typeof value.label !== "string") {
+		return { error: errorFor(filePath, `provider ${providerId} accounts[${index}].label must be a string`) };
+	}
+	if ("apiKey" in value && typeof value.apiKey !== "string") {
+		return { error: errorFor(filePath, `provider ${providerId} accounts[${index}].apiKey must be a string`) };
+	}
+	if ("headers" in value && !isStringRecord(value.headers)) {
+		return {
+			error: errorFor(filePath, `provider ${providerId} accounts[${index}].headers must map strings to strings`),
+		};
+	}
+	if ("upstreamModelIdSuffix" in value && typeof value.upstreamModelIdSuffix !== "string") {
+		return {
+			error: errorFor(
+				filePath,
+				`provider ${providerId} accounts[${index}].upstreamModelIdSuffix must be a string`,
+			),
+		};
+	}
+
+	const inlineCredentialError = validateCredentialFields(
+		filePath,
+		providerId,
+		value,
+		`accounts[${index}].`,
+	);
+	if (inlineCredentialError) return { error: inlineCredentialError };
+	const referenceError = validateCredentialReferences(filePath, providerId, value.id, value);
+	if (referenceError) return { error: referenceError };
+	if (value.apiKey === undefined && value.headers === undefined && value.upstreamModelIdSuffix === undefined) {
+		return {
+			error: errorFor(
+				filePath,
+				`provider ${providerId} account ${value.id} duplicates the base entry; specify apiKey, headers, or upstreamModelIdSuffix`,
+			),
+		};
+	}
+
+	const account: ProviderAccount = { id: value.id, label: value.label };
+	if (typeof value.apiKey === "string") account.apiKey = value.apiKey;
+	if (isStringRecord(value.headers)) account.headers = value.headers;
+	if (typeof value.upstreamModelIdSuffix === "string") {
+		account.upstreamModelIdSuffix = value.upstreamModelIdSuffix;
+	}
+	return { account };
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: Set<string>): boolean {
@@ -347,8 +461,8 @@ function validateEntry(
 		}
 	}
 
-	const accounts = entry.accounts;
-	if (accounts !== undefined && !isUnknownArray(accounts)) {
+	const rawAccounts = entry.accounts;
+	if (rawAccounts !== undefined && !isUnknownArray(rawAccounts)) {
 		return {
 			error: errorFor(filePath, "field accounts must be an array"),
 		};
@@ -360,16 +474,14 @@ function validateEntry(
 	const fieldCredentialError = validateCredentialFields(filePath, providerId, fields);
 	if (fieldCredentialError) return { error: fieldCredentialError };
 
-	if (Array.isArray(accounts)) {
-		for (const [index, account] of accounts.entries()) {
-			if (!isObject(account)) continue;
-			const accountCredentialError = validateCredentialFields(
-				filePath,
-				providerId,
-				account,
-				`accounts[${index}].`,
-			);
-			if (accountCredentialError) return { error: accountCredentialError };
+	const accounts: ProviderAccount[] = [];
+	if (rawAccounts) {
+		const baseReferenceError = validateCredentialReferences(filePath, providerId, "base", fields);
+		if (baseReferenceError) return { error: baseReferenceError };
+		for (const [index, rawAccount] of rawAccounts.entries()) {
+			const validatedAccount = validateAccount(filePath, providerId, index, rawAccount);
+			if (validatedAccount.error) return { error: validatedAccount.error };
+			if (validatedAccount.account) accounts.push(validatedAccount.account);
 		}
 	}
 
@@ -385,9 +497,34 @@ function validateEntry(
 		entry: {
 			providerId,
 			fields,
-			...(accounts === undefined ? {} : { accounts }),
+			...(rawAccounts === undefined ? {} : { accounts }),
 		},
 	};
+}
+
+export function expandProviderEntry(entry: ProviderFragmentEntry): RegisteredProviderEntry[] {
+	if (!entry.accounts) {
+		return [{ providerId: entry.providerId, fields: entry.fields }];
+	}
+
+	return entry.accounts.map((account, index) => {
+		const providerId = index === 0 ? entry.providerId : `${entry.providerId}-account-${index + 1}`;
+		const fields: ProviderConfig = {
+			...entry.fields,
+			name: `${entry.fields.name ?? entry.providerId} (${account.label})`,
+			...(account.apiKey === undefined ? {} : { apiKey: account.apiKey }),
+			...(account.headers === undefined ? {} : { headers: account.headers }),
+			...(account.upstreamModelIdSuffix === undefined || entry.fields.models === undefined
+				? {}
+				: {
+						models: entry.fields.models.map((model) => ({
+							...model,
+							upstreamModelId: `${model.upstreamModelId ?? model.id}${account.upstreamModelIdSuffix}`,
+						})),
+					}),
+		};
+		return { providerId, fields };
+	});
 }
 
 export function loadProviderFragments(options?: LoadFragmentsOptions): LoadFragmentsResult {

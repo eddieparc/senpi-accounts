@@ -190,6 +190,97 @@ before upgrading it.
 
 ## Development
 
+- `npm install` — install dev dependencies (typescript, vitest, senpi types)
+- `npm run build` — compile `src/` to `dist/` (tsc, emits `dist/index.js`)
+- `npm test` — run vitest
+- `npm run typecheck` — strict typecheck, no emit
+
+## Loading in senpi
+
+The `pi` block in `package.json` points senpi at the built entry
+`./dist/index.js`. Run `npm run build` first, then load the package through
+senpi's extension mechanism (for example,
+`senpi -e /path/to/senpi-accounts/dist/index.js`).
+
+### Anthropic Messages providers
+
+For `api: "anthropic-messages"`, set `baseUrl` to the server origin or prefix
+**without** a trailing `/v1`: senpi appends `/v1/messages`, so a `/v1` suffix
+would request `/v1/v1/messages`. Set `authHeader: false` for normal Anthropic
+`x-api-key` authentication; `authHeader: true` additionally sends
+`Authorization: Bearer <key>`.
+
+## Declarative multi-account fragments
+
+A fragment file is a JSON object mapping one provider id to one `ProviderEntry`:
+
+```json
+{
+  "<providerId>": {
+    "name": "string",
+    "baseUrl": "string",
+    "apiKey": "!command or $ENV reference",
+    "api": "string",
+    "headers": { "header-name": "!command or $ENV reference" },
+    "extraBody": {},
+    "authHeader": false,
+    "models": [],
+    "accounts": [
+      {
+        "id": "string",
+        "label": "string",
+        "apiKey": "optional !command or $ENV reference",
+        "headers": { "header-name": "optional !command or $ENV reference" },
+        "upstreamModelIdSuffix": "optional string"
+      }
+    ]
+  }
+}
+```
+
+`ProviderEntry` is exactly the public `ProviderConfig` subset `name`, `baseUrl`,
+`apiKey`, `api`, `headers`, `extraBody`, `authHeader`, and `models`, plus the
+optional extension-owned `accounts` array shown above. Account objects accept
+exactly `id`, `label`, `apiKey`, `headers`, and `upstreamModelIdSuffix`; `id`
+and `label` are required strings. `accounts` is not a senpi `ProviderConfig`
+field and is always removed before `registerProvider` is called.
+
+When `accounts` is present, entry 1 registers as `<providerId>`, entry 2 as
+`<providerId>-account-2`, entry 3 as `<providerId>-account-3`, and so on. Each
+registered configuration is a shallow merge of the base entry and that account's
+`apiKey` and `headers`; an account `headers` object replaces the base `headers`
+object rather than deep-merging it. Its display name is
+`<base name or provider id> (<label>)`; `id` and `label` never enter the provider
+id or registered config other than that display-name suffix.
+
+Every account `apiKey` and header value must be a config-value reference:
+`!command`, `$ENV`, or `${ENV}`. The same rule applies to a base credential that
+an account inherits. Literal credential-shaped values are rejected with the
+existing inline-secret diagnostic, and other literal account credential values
+are rejected before registration. References are passed to senpi unchanged for
+senpi itself to resolve; this extension never resolves, logs, persists, or
+writes credentials.
+
+An account must override at least one of `apiKey`, `headers`, or
+`upstreamModelIdSuffix`; otherwise it is rejected as a duplicate and the error
+names its `id`. A suffix-only account is valid. With
+`upstreamModelIdSuffix`, each emitted model keeps its user-facing `id` while its
+`upstreamModelId` becomes `<upstreamModelId ?? id><suffix>`.
+
+Fragments cannot declare `oauth`; the extension never emits a `ProviderConfig.oauth`
+block. It also implements no credential rotation, cooldown, failover, or refresh
+timer.
+
+## Reload safety
+
+Provider ownership is held only in module memory. Each clean factory invocation
+registers every valid configured provider and removes only previously owned IDs
+that are no longer defined. If any fragment fails parsing or validation, its
+absence is ambiguous: the extension reports the file-specific error, continues
+registering valid fragments, and retains previously owned providers until a
+later clean invocation confirms removal. The extension neither reads nor writes
+`models.json`, credentials, or runtime state files.
+
 `npm run typecheck`, `npm run build`, `npm test`, and `npm run doc-check` are
 the package checks. `npm run doc-check` runs every shell command block in this
 README in an isolated temporary home directory.
