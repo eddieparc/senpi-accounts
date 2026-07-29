@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -99,7 +99,10 @@ async function loadFreshExtension(): Promise<typeof senpiAccounts> {
 describe("senpi-accounts extension", () => {
 	it("registers every loaded provider once before its async factory completes", async () => {
 		writeFragment("10-providers.json", {
-			alpha: { ...provider("Alpha"), accounts: [{ label: "personal" }] },
+			alpha: {
+				...provider("Alpha"),
+				accounts: [{ id: "personal", label: "Personal", apiKey: "$ALPHA_PERSONAL_KEY" }],
+			},
 			beta: provider("Beta"),
 		});
 		const registration = createPi();
@@ -111,6 +114,102 @@ describe("senpi-accounts extension", () => {
 		expect(registration.registrations.map(({ id }) => id)).toEqual(["alpha", "beta"]);
 		expect(registration.registrations[0]?.config).not.toHaveProperty("accounts");
 		expect(registration.unregistrations).toEqual([]);
+	});
+
+	it("does not write or mutate files while registering a fragment", async () => {
+		const fixture = { alpha: provider("Alpha") };
+		const filePath = writeFragment("10-provider.json", fixture);
+		const beforeFiles = readdirSync(root);
+		const beforeContents = readFileSync(filePath, "utf8");
+		const registration = createPi();
+
+		await senpiAccounts(registration.pi);
+
+		expect(registration.registrations.map(({ id }) => id)).toEqual(["alpha"]);
+		expect(readdirSync(root)).toEqual(beforeFiles);
+		expect(readFileSync(filePath, "utf8")).toBe(beforeContents);
+	});
+
+	it("registers accounts 1 through 3 under native ids with shallow account overrides", async () => {
+		writeFragment("10-accounts.json", {
+			gateway: {
+				...provider("Gateway"),
+				headers: { "x-base-key": "$BASE_KEY", "x-version": "$BASE_VERSION" },
+				accounts: [
+					{
+						id: "personal",
+						label: "Personal",
+						apiKey: "!printf personal-key",
+						headers: { "x-api-key": "!printf personal-header" },
+					},
+					{
+						id: "work",
+						label: "Work",
+						apiKey: "$WORK_KEY",
+						headers: { "x-api-key": "$WORK_HEADER" },
+					},
+					{
+						id: "backup",
+						label: "Backup",
+						apiKey: "${BACKUP_KEY}",
+						headers: { "x-api-key": "${BACKUP_HEADER}" },
+					},
+				],
+			},
+		});
+		const registration = createPi();
+
+		await senpiAccounts(registration.pi);
+
+		expect(registration.registrations.map(({ id }) => id)).toEqual([
+			"gateway",
+			"gateway-account-2",
+			"gateway-account-3",
+		]);
+		expect(registration.registrations.map(({ config }) => config.apiKey)).toEqual([
+			"!printf personal-key",
+			"$WORK_KEY",
+			"${BACKUP_KEY}",
+		]);
+		expect(registration.registrations.map(({ config }) => config.headers)).toEqual([
+			{ "x-api-key": "!printf personal-header" },
+			{ "x-api-key": "$WORK_HEADER" },
+			{ "x-api-key": "${BACKUP_HEADER}" },
+		]);
+		expect(registration.registrations.map(({ config }) => config.name)).toEqual([
+			"Gateway (Personal)",
+			"Gateway (Work)",
+			"Gateway (Backup)",
+		]);
+		for (const { config } of registration.registrations) {
+			expect(config).not.toHaveProperty("accounts");
+			expect(config).not.toHaveProperty("oauth");
+		}
+	});
+
+	it("accepts a suffix-only account while preserving its model id", async () => {
+		writeFragment("10-suffix-account.json", {
+			sharedGateway: {
+				...provider("Shared gateway"),
+				accounts: [
+					{
+						id: "branch-a",
+						label: "Branch A",
+						upstreamModelIdSuffix: ":branch-a",
+					},
+				],
+			},
+		});
+		const registration = createPi();
+
+		await senpiAccounts(registration.pi);
+
+		expect(registration.registrations.map(({ id }) => id)).toEqual(["sharedGateway"]);
+		const registeredModel = registration.registrations[0]?.config.models?.[0];
+		expect(registeredModel).toMatchObject({
+			id: "shared gateway-model",
+			upstreamModelId: "shared gateway-model:branch-a",
+		});
 	});
 
 	it("removes only ids it previously owned when a later invocation no longer defines them", async () => {

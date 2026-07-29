@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@code-yeongyu/senpi";
-import { loadProviderFragments } from "./config.js";
+import { expandProviderEntry, loadProviderFragments } from "./config.js";
 
 export type { ProviderConfig } from "@code-yeongyu/senpi";
 
@@ -56,9 +56,15 @@ export default async function senpiAccounts(pi: SenpiExtensionAPI): Promise<void
 		reportError(error.message);
 	}
 
-	const currentProviderIds = new Set(
-		result.fragments.flatMap((fragment) => fragment.providers.map((provider) => provider.providerId)),
+	const currentProviders = result.fragments.flatMap((fragment) =>
+		fragment.providers.flatMap((provider) =>
+			expandProviderEntry(provider).map((registeredProvider) => ({
+				filePath: fragment.filePath,
+				...registeredProvider,
+			})),
+		),
 	);
+	const currentProviderIds = new Set(currentProviders.map((provider) => provider.providerId));
 
 	if (result.errors.length === 0) {
 		for (const providerId of ownedProviderIds) {
@@ -74,16 +80,14 @@ export default async function senpiAccounts(pi: SenpiExtensionAPI): Promise<void
 		}
 	}
 
-	for (const fragment of result.fragments) {
-		for (const provider of fragment.providers) {
-			try {
-				pi.registerProvider(provider.providerId, provider.fields);
-				ownedProviderIds.add(provider.providerId);
-			} catch (error) {
-				reportError(
-					`${fragment.filePath}: could not register provider ${provider.providerId}: ${errorMessage(error)}`,
-				);
-			}
+	for (const provider of currentProviders) {
+		try {
+			pi.registerProvider(provider.providerId, provider.fields);
+			ownedProviderIds.add(provider.providerId);
+		} catch (error) {
+			reportError(
+				`${provider.filePath}: could not register provider ${provider.providerId}: ${errorMessage(error)}`,
+			);
 		}
 	}
 }
