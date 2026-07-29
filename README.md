@@ -2,8 +2,9 @@
 
 Senpi extension for upstream provider account management.
 
-> **Status: scaffold.** The extension factory in `src/index.ts` is a near-no-op;
-> account-management behavior lands in later tasks.
+> **Status:** Loads validated JSON provider fragments and registers them through
+> senpi's public `pi.registerProvider(id, config)` API during async extension
+> startup.
 
 ## Supported senpi version
 
@@ -23,10 +24,9 @@ Why:
   `dist/index.d.ts` re-exports `ExtensionAPI`, `ProviderConfig`, and friends,
   and `package.json` exposes them through `exports["."].types`
   (`./dist/index.d.ts`).
-- Nothing is vendored and there is no silent `any` fallback: `src/index.ts`
-  carries a compile-time guard (`IsAny` check) that fails the build if the
-  upstream `ExtensionAPI` ever degrades to `any` (e.g. broken type resolution
-  under `skipLibCheck`).
+- Nothing is vendored: `src/index.ts` carries a compile-time guard that fails
+  the build if the upstream `ExtensionAPI` stops resolving correctly (for
+  example, under a broken `skipLibCheck` setup).
 
 The rejected alternative (a minimal local interface in `src/types.ts`) remains
 the fallback if a future senpi release stops shipping usable declarations.
@@ -42,7 +42,18 @@ the fallback if a future senpi release stops shipping usable declarations.
 
 The `pi` block in `package.json` points senpi at the built entry
 `./dist/index.js`. Run `npm run build` first, then load the package through
-senpi's extension mechanism (e.g. `senpi -e /path/to/senpi-accounts`).
+senpi's extension mechanism (for example,
+`senpi -e /path/to/senpi-accounts/dist/index.js`).
+
+## Reload safety
+
+Provider ownership is held only in module memory. Each clean factory invocation
+registers every valid configured provider and removes only previously owned IDs
+that are no longer defined. If any fragment fails parsing or validation, its
+absence is ambiguous: the extension reports the file-specific error, continues
+registering valid fragments, and retains previously owned providers until a
+later clean invocation confirms removal. The extension neither reads nor writes
+`models.json`, credentials, or runtime state files.
 
 ## License
 
