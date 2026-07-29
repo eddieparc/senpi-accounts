@@ -10,6 +10,8 @@ interface Registration {
 	config: ProviderConfig;
 }
 
+type ExtensionEventBus = SenpiExtensionAPI extends { events: infer T } ? T : never;
+
 let root: string;
 let previousAccountsDir: string | undefined;
 let senpiAccounts: typeof import("../src/index").default;
@@ -58,7 +60,16 @@ function writeFragment(name: string, fragment: unknown): string {
 	return path;
 }
 
-function createPi(options?: { failRegistrationFor?: string[] }): {
+function createEventBus(): ExtensionEventBus {
+	return {
+		emit(_channel: string, _data: unknown): void {},
+		on(_channel: string, _handler: (data: unknown) => void): () => void {
+			return () => undefined;
+		},
+	};
+}
+
+function createPi(options?: { failRegistrationFor?: string[]; eventBus?: ExtensionEventBus }): {
 	pi: SenpiExtensionAPI;
 	registrations: Registration[];
 	unregistrations: string[];
@@ -66,6 +77,7 @@ function createPi(options?: { failRegistrationFor?: string[] }): {
 	const registrations: Registration[] = [];
 	const unregistrations: string[] = [];
 	const pi = {
+		events: options?.eventBus ?? createEventBus(),
 		registerProvider(id: string, config: ProviderConfig): void {
 			if (options?.failRegistrationFor?.includes(id)) {
 				throw new Error(`registration failed for ${id}`);
@@ -77,6 +89,11 @@ function createPi(options?: { failRegistrationFor?: string[] }): {
 		},
 	} as unknown as SenpiExtensionAPI;
 	return { pi, registrations, unregistrations };
+}
+
+async function loadFreshExtension(): Promise<typeof senpiAccounts> {
+	vi.resetModules();
+	return (await import("../src/index")).default;
 }
 
 describe("senpi-accounts extension", () => {
@@ -97,18 +114,19 @@ describe("senpi-accounts extension", () => {
 	});
 
 	it("removes only ids it previously owned when a later invocation no longer defines them", async () => {
+		const eventBus = createEventBus();
 		writeFragment("10-providers.json", {
 			alpha: provider("Alpha"),
 			beta: provider("Beta"),
 		});
-		const firstInvocation = createPi();
+		const firstInvocation = createPi({ eventBus });
 		await senpiAccounts(firstInvocation.pi);
 
 		writeFragment("10-providers.json", {
 			beta: provider("Beta"),
 			external: provider("External"),
 		});
-		const secondInvocation = createPi();
+		const secondInvocation = createPi({ eventBus });
 		await senpiAccounts(secondInvocation.pi);
 
 		expect(secondInvocation.unregistrations).toEqual(["alpha"]);
@@ -116,23 +134,44 @@ describe("senpi-accounts extension", () => {
 		expect(secondInvocation.registrations.map(({ id }) => id)).toEqual(["beta", "external"]);
 	});
 
+	it("unregisters stale owned ids after senpi reload re-evaluates the extension module", async () => {
+		const eventBus = createEventBus();
+		writeFragment("10-providers.json", { stale: provider("Stale") });
+		const firstInvocation = createPi({ eventBus });
+		await senpiAccounts(firstInvocation.pi);
+		expect(firstInvocation.registrations.map(({ id }) => id)).toEqual(["stale"]);
+
+		writeFragment("10-providers.json", { current: provider("Current"), external: provider("External") });
+		const reloadedExtension = await loadFreshExtension();
+		const reloadedInvocation = createPi({ eventBus });
+		await reloadedExtension(reloadedInvocation.pi);
+
+		expect(reloadedExtension).not.toBe(senpiAccounts);
+		expect(reloadedInvocation.pi).not.toBe(firstInvocation.pi);
+		expect(reloadedInvocation.unregistrations).toEqual(["stale"]);
+		expect(reloadedInvocation.unregistrations).not.toContain("external");
+		expect(reloadedInvocation.registrations.map(({ id }) => id)).toEqual(["current", "external"]);
+	});
+
 	it("records only successfully registered ids as extension-owned", async () => {
+		const eventBus = createEventBus();
 		const filePath = writeFragment("10-providers.json", { failed: provider("Failed") });
 		const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-		const failedRegistration = createPi({ failRegistrationFor: ["failed"] });
+		const failedRegistration = createPi({ failRegistrationFor: ["failed"], eventBus });
 		await senpiAccounts(failedRegistration.pi);
 		expect(failedRegistration.registrations).toEqual([]);
 		expect(reportError).toHaveBeenCalledWith(expect.stringContaining(filePath));
 
 		writeFragment("10-providers.json", {});
-		const laterInvocation = createPi();
+		const laterInvocation = createPi({ eventBus });
 		await senpiAccounts(laterInvocation.pi);
 		expect(laterInvocation.unregistrations).toEqual([]);
 	});
 
 	it("retains previous owned ids when a malformed fragment makes removal ambiguous", async () => {
+		const eventBus = createEventBus();
 		writeFragment("10-providers.json", { alpha: provider("Alpha") });
-		const firstInvocation = createPi();
+		const firstInvocation = createPi({ eventBus });
 		await senpiAccounts(firstInvocation.pi);
 		expect(firstInvocation.registrations.map(({ id }) => id)).toEqual(["alpha"]);
 
@@ -140,7 +179,7 @@ describe("senpi-accounts extension", () => {
 			alpha: { name: "Alpha", unknownField: true },
 		});
 		const reportError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-		const secondInvocation = createPi();
+		const secondInvocation = createPi({ eventBus });
 		await senpiAccounts(secondInvocation.pi);
 
 		expect(secondInvocation.unregistrations).toEqual([]);
