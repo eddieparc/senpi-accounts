@@ -59,6 +59,35 @@ Then pick a model:
 /model kiro/claude-opus-5
 ```
 
+### Adding a second or third Kiro account
+
+Kiro federates Google sign-in through its own Cognito pool, and Google keeps a
+browser-wide SSO cookie. Two consequences:
+
+- Signing out of **Kiro** alone is not enough — Google silently re-authenticates the
+  same identity server-side, before any client-side `prompt=select_account` can apply.
+- Aside browser profiles do **not** help: they share one Google cookie jar, so every
+  profile presents the same default Google account.
+
+So a second Kiro account needs the Google account switched first:
+
+1. In the browser, sign out of Kiro: `https://app.kiro.dev/home` → account menu →
+   **Sign Out**.
+2. Sign out of Google, or switch the default account, at
+   `https://accounts.google.com/Logout`, then sign in as the account you want.
+3. Run the scripted login below and it will bind that account.
+
+Verify which identity was actually captured — the login prints the email:
+
+```
+USAGE 0/0 jgplabs@gmail.com
+SAVED jgplabs
+```
+
+If it prints the wrong address, the Google session did not switch; repeat step 2.
+Accounts are keyed by name, so a duplicate simply stores the same identity twice and
+yields no extra quota.
+
 ### Scripted login
 
 For CI or headless setup:

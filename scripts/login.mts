@@ -45,6 +45,23 @@ try {
 	console.log(`USAGE_UNAVAILABLE ${error instanceof Error ? error.message : String(error)}`);
 }
 
-writePool(agentDir, KIRO_PROVIDER_ID, addAccount(readPool(agentDir, KIRO_PROVIDER_ID), tokensToSlot(name, enriched)));
-console.log(`SAVED ${name}`);
+const pool = readPool(agentDir, KIRO_PROVIDER_ID);
+
+// Kiro federates Google through Cognito, and Google's browser-wide SSO cookie
+// re-authenticates the previous identity unless the *Google* session is
+// switched first. Storing that under a new name would look like a second
+// subscription while sharing one quota, so refuse it explicitly.
+const duplicate = enriched.email
+	? pool.accounts.find((slot) => (slot.meta as { email?: string } | undefined)?.email === enriched.email)
+	: undefined;
+if (duplicate) {
+	console.error(
+		`REFUSED: this login returned ${enriched.email}, already stored as '${duplicate.name}'.\n` +
+			"Sign out of Kiro AND switch the Google account (https://accounts.google.com/Logout), then retry.",
+	);
+	process.exit(1);
+}
+
+writePool(agentDir, KIRO_PROVIDER_ID, addAccount(pool, tokensToSlot(name, enriched)));
+console.log(`SAVED ${name}${enriched.email ? ` <${enriched.email}>` : ""}`);
 process.exit(0);

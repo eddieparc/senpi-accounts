@@ -194,7 +194,7 @@ async function startCallbackServer(authMethod: "google" | "github"): Promise<Cal
 				reject(error);
 			};
 			server.once("error", onError);
-			server.listen(port, redirect.hostname, () => {
+			server.listen(port, "127.0.0.1", () => {
 				server.off("error", onError);
 				resolve();
 			});
@@ -202,6 +202,9 @@ async function startCallbackServer(authMethod: "google" | "github"): Promise<Cal
 
 	for (let port = firstPort; port <= firstPort + CALLBACK_PORT_SPAN; port++) {
 		try {
+			// Bind the IPv4 loopback explicitly. Binding by hostname can land on
+			// `[::1]` while the browser resolves `localhost` to `127.0.0.1`, and the
+			// redirect then never reaches this server.
 			await listen(port);
 			const address = server.address();
 			boundPort = typeof address === "object" && address ? address.port : port;
