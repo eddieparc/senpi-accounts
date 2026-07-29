@@ -1,127 +1,89 @@
-import type { ExtensionAPI, ProviderConfig } from "@code-yeongyu/senpi";
-import { expandProviderEntry, loadProviderFragments } from "./config.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { EXTENSION_ID, registerProviderPackages } from "./core/registry.js";
+import type {
+	ExtensionCommandContext,
+	ProviderBuildContext,
+	ProviderHealth,
+	ProviderPackage,
+	SenpiExtensionAPI,
+} from "./core/types.js";
+import { buildUsageReport } from "./core/usage.js";
 
-export type { ProviderConfig };
-
-/**
- * Compile-time guard: if the `@code-yeongyu/senpi` declarations fail to
- * resolve (e.g. silently suppressed under `skipLibCheck`), this alias becomes
- * an unassignable marker tuple rather than weakening the factory parameter.
- */
-type IsUnresolved<T> = 0 extends 1 & T ? true : false;
-type Resolved<T> = IsUnresolved<T> extends true
-	? ["@code-yeongyu/senpi ExtensionAPI type failed to resolve"]
-	: T;
-
-export type SenpiExtensionAPI = Resolved<ExtensionAPI>;
-
-export const EXTENSION_ID = "@eddieparc/senpi-accounts";
-
-// Senpi creates a fresh extension module and API object on reload, but retains
-// the EventBus owned by its resource loader. A global symbol lets the fresh
-// module find this extension's host-scoped state without writing a file.
-const ownedProviderIdsKey = Symbol.for(`${EXTENSION_ID}:owned-provider-ids`);
-
-function getOwnedProviderIds(pi: SenpiExtensionAPI): Set<string> {
-	const eventBus = pi.events as unknown as Record<symbol, unknown>;
-	const existing = eventBus[ownedProviderIdsKey];
-	if (existing instanceof Set) {
-		return existing as Set<string>;
-	}
-
-	const ownedProviderIds = new Set<string>();
-	Object.defineProperty(eventBus, ownedProviderIdsKey, { value: ownedProviderIds });
-	return ownedProviderIds;
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function reportError(message: string): void {
-	console.error(`${EXTENSION_ID}: ${message}`);
-}
-
-function reportKiroConnectionUrl(pi: SenpiExtensionAPI, currentProviders: RegisteredProvider[]): void {
-	const baseUrl = currentProviders.find((provider) => provider.providerId === "kiro")?.fields.baseUrl;
-	if (!baseUrl) {
-		return;
-	}
-
-	pi.on("message_end", (event) => {
-		if (event.message.role !== "assistant" || event.message.provider !== "kiro") {
-			return;
-		}
-		const errorMessage = event.message.errorMessage;
-		if (
-			typeof errorMessage !== "string" ||
-			!/(?:connection|connect|fetch failed)/iu.test(errorMessage) ||
-			errorMessage.includes(baseUrl)
-		) {
-			return;
-		}
-		return {
-			message: {
-				...event.message,
-				errorMessage: `${errorMessage} (${baseUrl})`,
-			},
-		};
-	});
-}
-
-interface RegisteredProvider {
-	filePath: string;
-	providerId: string;
-	fields: ProviderConfig;
-}
+export type { ProviderPackage, ProviderHealth, ProviderBuildContext } from "./core/types.js";
+export { EXTENSION_ID } from "./core/registry.js";
 
 /**
- * Registers the current JSON fragments during extension loading. If every
- * fragment parsed successfully, ids this module registered on an earlier
- * invocation but which are now absent are unregistered. A fragment error makes
- * absence ambiguous, so existing owned providers are retained until a clean
- * invocation confirms their removal.
+ * senpi-accounts — multi-provider subscription addon.
+ *
+ * Stock senpi is the base layer and is never modified. This addon sits above it
+ * and fills only the gaps stock leaves: Anthropic multi-account, OpenAI fast
+ * mode, Alibaba Token Plan and OpenCode Go are all stock features and are
+ * deliberately not reimplemented here.
+ *
+ * Every provider lives in its own package under `src/providers/` and is loaded
+ * lazily inside a try/catch, so one broken provider degrades only itself.
  */
-export default async function senpiAccounts(pi: SenpiExtensionAPI): Promise<void> {
-	const ownedProviderIds = getOwnedProviderIds(pi);
-	const result = loadProviderFragments();
-	for (const error of result.errors) {
-		reportError(error.message);
+
+function agentDir(env: NodeJS.ProcessEnv): string {
+	const configured = env.SENPI_CODING_AGENT_DIR?.trim();
+	if (configured) {
+		return configured.startsWith("~") ? join(homedir(), configured.slice(1)) : configured;
 	}
+	return join(homedir(), ".senpi", "agent");
+}
 
-	const currentProviders = result.fragments.flatMap((fragment) =>
-		fragment.providers.flatMap((provider) =>
-			expandProviderEntry(provider).map((registeredProvider) => ({
-				filePath: fragment.filePath,
-				...registeredProvider,
-			})),
-		),
-	);
-	const currentProviderIds = new Set(currentProviders.map((provider) => provider.providerId));
-	reportKiroConnectionUrl(pi, currentProviders);
+async function loadProviderPackages(): Promise<{ packages: ProviderPackage[]; failures: ProviderHealth[] }> {
+	const packages: ProviderPackage[] = [];
+	const failures: ProviderHealth[] = [];
 
-	if (result.errors.length === 0) {
-		for (const providerId of ownedProviderIds) {
-			if (currentProviderIds.has(providerId)) {
-				continue;
-			}
-			try {
-				pi.unregisterProvider(providerId);
-				ownedProviderIds.delete(providerId);
-			} catch (error) {
-				reportError(`could not unregister provider ${providerId}: ${errorMessage(error)}`);
-			}
-		}
-	}
+	const loaders: { id: string; load: () => Promise<ProviderPackage> }[] = [
+		{ id: "kiro", load: async () => (await import("./providers/kiro/index.js")).kiroProviderPackage() },
+	];
 
-	for (const provider of currentProviders) {
+	for (const loader of loaders) {
 		try {
-			pi.registerProvider(provider.providerId, provider.fields);
-			ownedProviderIds.add(provider.providerId);
+			packages.push(await loader.load());
 		} catch (error) {
-			reportError(
-				`${provider.filePath}: could not register provider ${provider.providerId}: ${errorMessage(error)}`,
-			);
+			const reason = error instanceof Error ? error.message : String(error);
+			failures.push({ status: "degraded", providerId: loader.id, reason, error });
+			console.error(`${EXTENSION_ID}: provider '${loader.id}' failed to load: ${reason}`);
 		}
 	}
+
+	return { packages, failures };
+}
+
+export default async function senpiAccounts(pi: SenpiExtensionAPI): Promise<void> {
+	const env = process.env;
+	const context: ProviderBuildContext = { env, agentDir: agentDir(env) };
+
+	const { packages, failures } = await loadProviderPackages();
+	const { health } = await registerProviderPackages(pi, packages, context);
+	const allHealth = [...failures, ...health];
+	const registered = packages.filter((entry) =>
+		allHealth.some((item) => item.providerId === entry.id && item.status === "registered"),
+	);
+
+	pi.registerCommand("usage", {
+		description: "Show remaining usage across every configured subscription.",
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
+			ctx.ui.notify(await buildUsageReport(registered, context), "info");
+		},
+	});
+
+	pi.registerCommand("senpi-accounts", {
+		description: "Show senpi-accounts provider health.",
+		handler: async (_args: string, ctx: ExtensionCommandContext) => {
+			const lines = allHealth.map((entry) => {
+				if (entry.status === "registered") return `  ${entry.providerId}: registered`;
+				if (entry.status === "skipped") return `  ${entry.providerId}: skipped (${entry.reason})`;
+				return `  ${entry.providerId}: DEGRADED (${entry.reason})`;
+			});
+			ctx.ui.notify(
+				[`${EXTENSION_ID}:`, ...(lines.length > 0 ? lines : ["  (no providers)"])].join("\n"),
+				allHealth.some((entry) => entry.status === "degraded") ? "error" : "info",
+			);
+		},
+	});
 }

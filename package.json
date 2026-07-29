@@ -1,13 +1,15 @@
 {
   "name": "@eddieparc/senpi-accounts",
   "version": "0.1.0",
-  "description": "Senpi extension for upstream provider account management (scaffold).",
+  "description": "Senpi addon: multi-account subscription providers (Kiro) with cache-preserving routing, usage-aware placement and 429 failover.",
   "type": "module",
   "license": "MIT",
   "keywords": [
     "pi-package",
     "senpi",
     "senpi-extension",
+    "kiro",
+    "multi-account",
     "provider-accounts"
   ],
   "pi": {
@@ -15,27 +17,22 @@
       "./dist/index.js"
     ]
   },
-  "bin": {
-    "senpi-accounts": "./dist/doctor.js"
-  },
   "files": [
     "dist",
-    "presets",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "doc-check": "node scripts/check-readme.mjs",
-    "doctor": "node ./dist/doctor.js doctor",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
   "peerDependencies": {
-    "@code-yeongyu/senpi": "^2026.7.28-3-dev.954f53da6"
+    "@code-yeongyu/senpi": ">=2026.7.28"
   },
   "devDependencies": {
-    "@code-yeongyu/senpi": "^2026.7.28-3-dev.954f53da6",
+    "@code-yeongyu/senpi": "^2026.7.29",
     "@types/node": "^24.13.3",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"
