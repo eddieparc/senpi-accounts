@@ -78,6 +78,7 @@ function createPi(options?: { failRegistrationFor?: string[]; eventBus?: Extensi
 	const unregistrations: string[] = [];
 	const pi = {
 		events: options?.eventBus ?? createEventBus(),
+		on(_event: string, _handler: (event: unknown) => unknown): void {},
 		registerProvider(id: string, config: ProviderConfig): void {
 			if (options?.failRegistrationFor?.includes(id)) {
 				throw new Error(`registration failed for ${id}`);

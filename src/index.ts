@@ -1,7 +1,7 @@
-import type { ExtensionAPI } from "@code-yeongyu/senpi";
+import type { ExtensionAPI, ProviderConfig } from "@code-yeongyu/senpi";
 import { expandProviderEntry, loadProviderFragments } from "./config.js";
 
-export type { ProviderConfig } from "@code-yeongyu/senpi";
+export type { ProviderConfig };
 
 /**
  * Compile-time guard: if the `@code-yeongyu/senpi` declarations fail to
@@ -42,6 +42,39 @@ function reportError(message: string): void {
 	console.error(`${EXTENSION_ID}: ${message}`);
 }
 
+function reportKiroConnectionUrl(pi: SenpiExtensionAPI, currentProviders: RegisteredProvider[]): void {
+	const baseUrl = currentProviders.find((provider) => provider.providerId === "kiro")?.fields.baseUrl;
+	if (!baseUrl) {
+		return;
+	}
+
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant" || event.message.provider !== "kiro") {
+			return;
+		}
+		const errorMessage = event.message.errorMessage;
+		if (
+			typeof errorMessage !== "string" ||
+			!/(?:connection|connect|fetch failed)/iu.test(errorMessage) ||
+			errorMessage.includes(baseUrl)
+		) {
+			return;
+		}
+		return {
+			message: {
+				...event.message,
+				errorMessage: `${errorMessage} (${baseUrl})`,
+			},
+		};
+	});
+}
+
+interface RegisteredProvider {
+	filePath: string;
+	providerId: string;
+	fields: ProviderConfig;
+}
+
 /**
  * Registers the current JSON fragments during extension loading. If every
  * fragment parsed successfully, ids this module registered on an earlier
@@ -65,6 +98,7 @@ export default async function senpiAccounts(pi: SenpiExtensionAPI): Promise<void
 		),
 	);
 	const currentProviderIds = new Set(currentProviders.map((provider) => provider.providerId));
+	reportKiroConnectionUrl(pi, currentProviders);
 
 	if (result.errors.length === 0) {
 		for (const providerId of ownedProviderIds) {

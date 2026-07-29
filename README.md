@@ -210,6 +210,46 @@ would request `/v1/v1/messages`. Set `authHeader: false` for normal Anthropic
 `x-api-key` authentication; `authHeader: true` additionally sends
 `Authorization: Bearer <key>`.
 
+## Kiro local-gateway preset
+
+The package ships `presets/20-kiro.json.disabled`. It is deliberately inert:
+the loader only reads files ending in `.json`, so installing this package cannot
+register Kiro by itself.
+
+Kiro has no public inference API. **A local Kiro login is mandatory**: start and
+sign in to the official Kiro CLI or IDE first, then run a local gateway that
+reads the local authentication state written by that official client. This
+extension never reads, copies, or stores that credential.
+
+The included default targets an OpenAI-compatible gateway at
+`http://127.0.0.1:8000/v1`, with the gateway request key supplied through
+`$KIRO_GATEWAY_API_KEY` in both the configured API-key and `x-api-key` header
+channels. Set that environment variable to the API key required by your chosen
+local gateway; no key is included in this package. Change the endpoint, request
+credential reference, and models in your copied fragment when your gateway uses
+different settings.
+
+Activate the preset explicitly by copying it into your user-owned provider
+directory with a `.json` name:
+
+```sh
+mkdir -p ~/.config/senpi-accounts/providers.d
+cp /path/to/senpi-accounts/presets/20-kiro.json.disabled \
+  ~/.config/senpi-accounts/providers.d/20-kiro.json
+export KIRO_GATEWAY_API_KEY='your-local-gateway-key'
+senpi --list-models
+```
+
+The documented default model list is `claude-haiku-4.5`, `claude-opus-4.5`,
+`claude-opus-4.6`, `claude-opus-4.7`, `claude-opus-4.8`, `claude-opus-5`,
+`claude-sonnet-4.5`, `claude-sonnet-4.6`, and `claude-sonnet-5`. Availability
+depends on both the user's Kiro tier and the chosen gateway, so remove or adapt
+models that gateway does not expose.
+
+This gateway approach was verified against a real Kiro subscription on the
+author's machine. It is still opt-in because each user must have a local Kiro
+login and choose, configure, and run a compatible local gateway.
+
 ## Declarative multi-account fragments
 
 A fragment file is a JSON object mapping one provider id to one `ProviderEntry`:
