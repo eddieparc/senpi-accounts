@@ -1,4 +1,5 @@
 import {
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -8,12 +9,16 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	loadProviderFragments,
 	type LoadFragmentsResult,
 } from "../src/config";
+
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const KIRO_PRESET_FILE = join(REPOSITORY_ROOT, "presets", "20-kiro.json.disabled");
 
 const FORBIDDEN_FIELDS = [
 	"whitelist",
@@ -129,6 +134,24 @@ describe("loadProviderFragments", () => {
 		expect(result.fragments.map((f) => f.filePath)).toEqual([
 			join(dir, "10-ccapi.json"),
 		]);
+	});
+
+	it("ships the Kiro preset inert until explicitly activated in a fixture", () => {
+		expect(basename(KIRO_PRESET_FILE)).toBe("20-kiro.json.disabled");
+		expect(existsSync(KIRO_PRESET_FILE)).toBe(true);
+
+		const shipped = loadProviderFragments({
+			env: { SENPI_ACCOUNTS_DIR: join(REPOSITORY_ROOT, "presets") },
+			homeDir: join(root, "home"),
+		});
+		expect(providerIds(shipped)).toEqual([]);
+		expect(shipped.errors).toEqual([]);
+
+		const fixtureDir = makeDir("kiro-enabled-fixture");
+		copyFileSync(KIRO_PRESET_FILE, join(fixtureDir, "20-kiro.json"));
+		const enabled = load(fixtureDir);
+		expect(enabled.errors).toEqual([]);
+		expect(providerIds(enabled)).toEqual(["kiro"]);
 	});
 
 	it("rejects an unknown field with an error naming the file and the key", () => {

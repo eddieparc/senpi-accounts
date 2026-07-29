@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -9,10 +9,13 @@ import { describe, expect, it } from "vitest";
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SENPI_CLI = join(REPOSITORY_ROOT, "node_modules", "@code-yeongyu", "senpi", "dist", "cli.js");
 const EXTENSION_ENTRY = join(REPOSITORY_ROOT, "dist", "index.js");
+const KIRO_PRESET_FILE = join(REPOSITORY_ROOT, "presets", "20-kiro.json.disabled");
 const PROVIDER_ID = "omo-e2e-anthropic";
 const MODEL_ID = "omo-e2e-model";
 const MULTI_ACCOUNT_PROVIDER_ID = "omo-e2e-accounts";
 const MULTI_ACCOUNT_MODEL_ID = "omo-e2e-account-model";
+const KIRO_PROVIDER_ID = "kiro";
+const KIRO_MODEL_ID = "claude-haiku-4.5";
 const MOCK_API_KEY_ENV = "SENPI_ACCOUNTS_E2E_MOCK_KEY";
 const MOCK_API_KEY = "e2e-placeholder-api-key";
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -40,6 +43,19 @@ const INFERENCE_ARGS = [
 	"Reply with exactly: OMOPROBE",
 ];
 const LIST_MODELS_ARGS = [...SENPI_STARTUP_ARGS, "--extension", EXTENSION_ENTRY, "--list-models"];
+const KIRO_INFERENCE_ARGS = [
+	...SENPI_STARTUP_ARGS,
+	"--no-tools",
+	"--extension",
+	EXTENSION_ENTRY,
+	"--provider",
+	KIRO_PROVIDER_ID,
+	"--model",
+	KIRO_MODEL_ID,
+	"--no-session",
+	"-p",
+	"Reply with exactly: OMOPROBE",
+];
 
 interface CapturedRequest {
 	method: string | undefined;
@@ -292,6 +308,15 @@ function writeProviderFragment(directory: string, baseUrl: string): void {
 	);
 }
 
+function writeKiroPresetFixture(directory: string, baseUrl: string): void {
+	mkdirSync(directory, { recursive: true });
+	const preset = JSON.parse(readFileSync(KIRO_PRESET_FILE, "utf8")) as {
+		kiro: { baseUrl: string };
+	};
+	preset.kiro.baseUrl = baseUrl;
+	writeFileSync(join(directory, "20-kiro.json"), JSON.stringify(preset));
+}
+
 function writeMultiAccountProviderFragment(directory: string, baseUrl: string): void {
 	mkdirSync(directory, { recursive: true });
 	writeFileSync(
@@ -346,6 +371,7 @@ function runSenpi(
 				SENPI_ACCOUNTS_DIR: providersDirectory,
 				SENPI_CODING_AGENT_DIR: join(root, "senpi-agent"),
 				[MOCK_API_KEY_ENV]: MOCK_API_KEY,
+				KIRO_GATEWAY_API_KEY: MOCK_API_KEY,
 			},
 		},
 	);
@@ -449,6 +475,43 @@ describe("provider registration against a local Anthropic Messages server", () =
 			expect(result.stdout).toContain(MULTI_ACCOUNT_PROVIDER_ID);
 			expect(result.stdout).toContain(`${MULTI_ACCOUNT_PROVIDER_ID}-account-2`);
 			expect(result.stdout).toContain(MULTI_ACCOUNT_MODEL_ID);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, REQUEST_TIMEOUT_MS + 5_000);
+
+	it("loads the explicitly enabled Kiro preset through the real CLI while its fixture gateway is listening", async () => {
+		const root = mkdtempSync(join(tmpdir(), "senpi-accounts-kiro-list-e2e-"));
+		const providersDirectory = join(root, "providers.d");
+		const server = await startMockAnthropicServer();
+		try {
+			writeKiroPresetFixture(providersDirectory, server.baseUrl);
+			const result = await runSenpi(root, providersDirectory, LIST_MODELS_ARGS);
+
+			expect(result.exitCode, result.stderr).toBe(0);
+			expect(result.signal).toBeNull();
+			expect(result.stdout.split("\n").filter((line) => /^kiro\s+/u.test(line))).toHaveLength(9);
+			expect(result.stdout).toContain(KIRO_MODEL_ID);
+		} finally {
+			await closeAndProvePortReleased(server);
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, REQUEST_TIMEOUT_MS + 5_000);
+
+	it("reports the configured Kiro gateway URL when inference cannot connect", async () => {
+		const root = mkdtempSync(join(tmpdir(), "senpi-accounts-kiro-unavailable-e2e-"));
+		const providersDirectory = join(root, "providers.d");
+		const unavailable = await startMockAnthropicServer();
+		const unavailableBaseUrl = unavailable.baseUrl;
+		await closeAndProvePortReleased(unavailable);
+		try {
+			writeKiroPresetFixture(providersDirectory, unavailableBaseUrl);
+			const result = await runSenpi(root, providersDirectory, KIRO_INFERENCE_ARGS);
+			const output = `${result.stdout}\n${result.stderr}`;
+
+			expect(result.exitCode).not.toBe(0);
+			expect(output).toContain(unavailableBaseUrl);
+			expect(output).toMatch(/(?:ECONNREFUSED|connect|connection|fetch failed)/iu);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
