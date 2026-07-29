@@ -87,6 +87,77 @@ function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// These prefixes identify credential formats, while ordinary values such as
+// local-development-key remain valid. References are deliberately not parsed
+// or resolved here: senpi owns those semantics and must receive the original
+// string unchanged.
+const INLINE_CREDENTIAL_PATTERNS = [
+	/^sk-ant-(?:api\d{2}|oat\d{2}|ort\d{2})-[A-Za-z0-9_-]+$/,
+	/^sk-ant-[A-Za-z0-9_-]{20,}$/,
+	/^sk-(?:proj|admin|svcacct)-[A-Za-z0-9_-]{16,}$/,
+	/^(?:ghp|gho)_[A-Za-z0-9_]{20,}$/,
+	/^github_pat_[A-Za-z0-9_]{20,}$/,
+	/^AIza[0-9A-Za-z_-]{30,}$/,
+	/^xox[baprs]-[0-9A-Za-z-]{20,}$/,
+	/^AKIA[0-9A-Z]{16}$/,
+];
+
+function looksLikeInlineCredential(value: string): boolean {
+	return INLINE_CREDENTIAL_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function credentialError(
+	filePath: string,
+	providerId: string,
+	location: string,
+): FragmentLoadError {
+	return errorFor(
+		filePath,
+		`provider ${providerId} ${location} looks like an inline credential; use a !command or $ENV reference instead`,
+	);
+}
+
+function validateCredentialValue(
+	filePath: string,
+	providerId: string,
+	location: string,
+	value: unknown,
+): FragmentLoadError | undefined {
+	if (typeof value === "string" && looksLikeInlineCredential(value)) {
+		return credentialError(filePath, providerId, location);
+	}
+	return undefined;
+}
+
+function validateCredentialFields(
+	filePath: string,
+	providerId: string,
+	fields: Record<string, unknown>,
+	locationPrefix = "",
+): FragmentLoadError | undefined {
+	const apiKeyError = validateCredentialValue(
+		filePath,
+		providerId,
+		`${locationPrefix}apiKey`,
+		fields.apiKey,
+	);
+	if (apiKeyError) return apiKeyError;
+
+	if (isObject(fields.headers)) {
+		for (const [headerName, headerValue] of Object.entries(fields.headers)) {
+			const headerError = validateCredentialValue(
+				filePath,
+				providerId,
+				`${locationPrefix}header ${headerName}`,
+				headerValue,
+			);
+			if (headerError) return headerError;
+		}
+	}
+
+	return undefined;
+}
+
 function isUnknownArray(value: unknown): value is unknown[] {
 	return Array.isArray(value);
 }
@@ -246,6 +317,15 @@ function validateEntry(
 		};
 	}
 
+	if ("oauth" in entry) {
+		return {
+			error: errorFor(
+				filePath,
+				`provider ${providerId} field oauth is not supported; use apiKey or headers references instead`,
+			),
+		};
+	}
+
 	for (const key of Object.keys(entry)) {
 		if (MODELS_JSON_FIELDS.has(key)) {
 			return {
@@ -276,6 +356,23 @@ function validateEntry(
 
 	const fields: Record<string, unknown> = { ...entry };
 	delete fields.accounts;
+
+	const fieldCredentialError = validateCredentialFields(filePath, providerId, fields);
+	if (fieldCredentialError) return { error: fieldCredentialError };
+
+	if (Array.isArray(accounts)) {
+		for (const [index, account] of accounts.entries()) {
+			if (!isObject(account)) continue;
+			const accountCredentialError = validateCredentialFields(
+				filePath,
+				providerId,
+				account,
+				`accounts[${index}].`,
+			);
+			if (accountCredentialError) return { error: accountCredentialError };
+		}
+	}
+
 	const issue = providerConfigIssue(fields);
 	if (issue) {
 		return { error: errorFor(filePath, issue) };
