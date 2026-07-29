@@ -1,7 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { basename, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	loadProviderFragments,
 	type LoadFragmentsResult,
@@ -239,5 +247,111 @@ describe("loadProviderFragments", () => {
 		const result = loadWithHome(home);
 		expect(result.dir).toBe(legacy);
 		expect(providerIds(result)).toEqual(["legacy"]);
+	});
+
+	it("passes command, environment, and escaped references through exactly without side effects", () => {
+		const dir = makeDir("providers.d");
+		const marker = join(dir, "command-was-executed");
+		const fragment = {
+			references: {
+				apiKey: "!printf test-key",
+				headers: {
+					"x-env": "$TEST_PROVIDER_KEY",
+					"x-braced-env": "${TEST_PROVIDER_KEY}",
+					"x-dollar-escape": "$$TEST_PROVIDER_KEY",
+					"x-bang-escape": "$!literal-value",
+					"x-command": `!touch "${marker}"`,
+				},
+			},
+		};
+		const filePath = writeFragment(dir, "10-references.json", fragment);
+		const log = vi.spyOn(console, "log");
+		const warn = vi.spyOn(console, "warn");
+		const error = vi.spyOn(console, "error");
+
+		try {
+			const result = load(dir);
+			const provider = result.fragments[0]?.providers[0];
+			expect(result.errors).toEqual([]);
+			expect(provider?.fields).toEqual(fragment.references);
+			expect(readFileSync(filePath, "utf8")).toBe(JSON.stringify(fragment));
+			expect(existsSync(marker)).toBe(false);
+			expect(readdirSync(dir)).toEqual([basename(filePath)]);
+			expect(log).not.toHaveBeenCalled();
+			expect(warn).not.toHaveBeenCalled();
+			expect(error).not.toHaveBeenCalled();
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
+
+	it("rejects a literal Anthropic-shaped apiKey without exposing its value", () => {
+		const dir = makeDir("providers.d");
+		const filePath = writeFragment(dir, "10-inline-key.json", {
+			anthropic: {
+				apiKey: "sk-ant-api03-FAKE_CREDENTIAL_1234567890",
+			},
+		});
+		const result = load(dir);
+		const message = result.errors[0]?.message ?? "";
+
+		expect(result.fragments[0]?.providers).toEqual([]);
+		expect(message).toContain(filePath);
+		expect(message).toContain("anthropic");
+		expect(message).toContain("apiKey");
+		expect(message).toContain("!command");
+		expect(message).toContain("$ENV");
+		expect(message).not.toContain("sk-ant-api03-FAKE_CREDENTIAL_1234567890");
+	});
+
+	it.each(["x-api-key", "authorization"])(
+		"rejects a literal credential in header %s without exposing its value",
+		(headerName) => {
+			const dir = makeDir("providers.d");
+			const value = "sk-ant-api03-FAKE_HEADER_CREDENTIAL_1234567890";
+			const filePath = writeFragment(dir, "10-inline-header.json", {
+				proxy: { headers: { [headerName]: value } },
+			});
+			const result = load(dir);
+			const message = result.errors[0]?.message ?? "";
+
+			expect(result.fragments[0]?.providers).toEqual([]);
+			expect(message).toContain(filePath);
+			expect(message).toContain("proxy");
+			expect(message).toContain(headerName);
+			expect(message).toContain("!command");
+			expect(message).toContain("$ENV");
+			expect(message).not.toContain(value);
+		},
+	);
+
+	it("keeps benign non-secret strings accepted and untouched", () => {
+		const dir = makeDir("providers.d");
+		const fragment = {
+			local: {
+				apiKey: "local-development-key",
+				headers: { "x-profile": "development" },
+			},
+		};
+		const filePath = writeFragment(dir, "10-benign.json", fragment);
+		const result = load(dir);
+
+		expect(result.errors).toEqual([]);
+		expect(result.fragments[0]?.providers[0]?.fields).toEqual(fragment.local);
+		expect(readFileSync(filePath, "utf8")).toBe(JSON.stringify(fragment));
+	});
+
+	it("does not accept an oauth block that could be emitted to senpi", () => {
+		const dir = makeDir("providers.d");
+		const filePath = writeFragment(dir, "10-oauth.json", {
+			provider: { oauth: { name: "unsupported-test-flow" } },
+		});
+		const result = load(dir);
+		const message = result.errors[0]?.message ?? "";
+
+		expect(result.fragments[0]?.providers).toEqual([]);
+		expect(message).toContain(filePath);
+		expect(message).toContain("provider");
+		expect(message).toContain("oauth");
 	});
 });
