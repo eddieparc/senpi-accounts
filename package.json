@@ -25,6 +25,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "doc-check": "node scripts/check-readme.mjs",
     "doctor": "node ./dist/doctor.js doctor",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

@@ -1,89 +1,199 @@
 # @eddieparc/senpi-accounts
 
-Senpi extension for upstream provider account management.
+Senpi extension for registering provider fragments from user-owned JSON files.
 
-> **Status:** Loads validated JSON provider fragments and registers them through
-> senpi's public `pi.registerProvider(id, config)` API during async extension
-> startup.
+## Install
 
-## Supported senpi version
+Install the published package into senpi:
 
-- Compatibility range (peer dependency): `@code-yeongyu/senpi` `^2026.7.28-3-dev.954f53da6`
-  (i.e. `>=2026.7.28-3-dev.954f53da6 <2027.0.0`).
-- Developed and tested against senpi `2026.7.28-3-dev.954f53da6`
-  (npm release line `2026.7.28`).
+`senpi install npm:@eddieparc/senpi-accounts@0.1.0`
 
-## Types decision
+The extension loads `*.json` fragments from
+`~/.config/senpi-accounts/providers.d/`. Set `SENPI_ACCOUNTS_DIR` to use a
+different directory. If the primary directory does not exist, it falls back to
+`~/.config/omo-providers/providers.d/`; files ending in `.disabled` are ignored.
 
-**Option A — use the published `@code-yeongyu/senpi` types** via a bounded
-devDependency (`^2026.7.28-3-dev.954f53da6`, types only, `import type`).
+For a local checkout, build it and verify a fragment before installing it:
 
-Why:
+```sh
+npm run build
+```
 
-- The installed senpi ships usable declarations for extension authors:
-  `dist/index.d.ts` re-exports `ExtensionAPI`, `ProviderConfig`, and friends,
-  and `package.json` exposes them through `exports["."].types`
-  (`./dist/index.d.ts`).
-- Nothing is vendored: `src/index.ts` carries a compile-time guard that fails
-  the build if the upstream `ExtensionAPI` stops resolving correctly (for
-  example, under a broken `skipLibCheck` setup).
+```sh
+export SENPI_ACCOUNTS_EXTENSION="$(pwd)/dist/index.js"
+export SENPI_ACCOUNTS_DIR="$HOME/.config/senpi-accounts/providers.d"
+export SENPI_ACCOUNTS_DOC_KEY="documentation-test-key"
+```
 
-The rejected alternative (a minimal local interface in `src/types.ts`) remains
-the fallback if a future senpi release stops shipping usable declarations.
+```sh
+mkdir -p "$SENPI_ACCOUNTS_DIR"
+cat > "$SENPI_ACCOUNTS_DIR/10-documentation-example.json" <<'JSON'
+{
+  "documentation-example": {
+    "name": "Documentation example",
+    "baseUrl": "http://127.0.0.1:9",
+    "apiKey": "$SENPI_ACCOUNTS_DOC_KEY",
+    "api": "anthropic-messages",
+    "authHeader": false,
+    "models": [
+      {
+        "id": "documentation-model",
+        "name": "Documentation model",
+        "reasoning": false,
+        "input": ["text"],
+        "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+        "contextWindow": 8192,
+        "maxTokens": 1024
+      }
+    ]
+  }
+}
+JSON
+```
 
-## Development
+```sh
+npx --no-install senpi \
+  --no-extensions --no-skills --no-prompt-templates --no-themes \
+  --no-context-files --offline \
+  --extension "$SENPI_ACCOUNTS_EXTENSION" \
+  --list-models documentation-example
+```
 
-- `npm install` — install dev dependencies (typescript, vitest, senpi types)
-- `npm run build` — compile `src/` to `dist/` (tsc, emits `dist/index.js`)
-- `npm test` — run vitest
-- `npm run typecheck` — strict typecheck, no emit
+## Fragment format
 
-## Loading in senpi
+Each file is a JSON object mapping a provider id to its configuration. The
+extension accepts `name`, `baseUrl`, `apiKey`, `api`, `headers`, `extraBody`,
+`authHeader`, and `models`, plus the extension-owned `accounts` key described
+below. Unknown fields are rejected with the file and field name.
 
-The `pi` block in `package.json` points senpi at the built entry
-`./dist/index.js`. Run `npm run build` first, then load the package through
-senpi's extension mechanism (for example,
-`senpi -e /path/to/senpi-accounts/dist/index.js`).
+A model in a fragment must contain `id`, `name`, `reasoning` (boolean), `input`
+(an array of `text`, `image`, or `video`), `cost`, `contextWindow`, and
+`maxTokens`. Incomplete models are rejected, and the provider silently will
+not appear in `senpi --list-models`; this is easy to miss when editing a
+fragment.
+
+## Credential reference syntax
+
+Credentials are references, not literal values. For `apiKey` and every header
+value, senpi supports `!command`, `$ENV_VAR`, `${ENV_VAR}`, `$$` yields a
+literal `$`, and `$!` yields a literal `!`. The extension passes references to
+senpi unchanged and rejects credential-shaped literal values. It does not log,
+persist, or refresh credentials.
+
+## Multi-account setup
+
+Add an `accounts` array to a provider entry. Every account requires `id` and
+`label`; it must override at least one of `apiKey`, `headers`, or
+`upstreamModelIdSuffix`. Account credentials must be `!command`, `$ENV_VAR`,
+or `${ENV_VAR}` references.
+
+```json
+{
+  "gateway": {
+    "name": "Gateway",
+    "baseUrl": "https://gateway.example",
+    "api": "anthropic-messages",
+    "models": [],
+    "accounts": [
+      {
+        "id": "personal",
+        "label": "Personal",
+        "apiKey": "$GATEWAY_PERSONAL_KEY"
+      },
+      {
+        "id": "work",
+        "label": "Work",
+        "headers": { "x-api-key": "!gateway-work-key" },
+        "upstreamModelIdSuffix": ":work"
+      }
+    ]
+  }
+}
+```
+
+The first account registers as `gateway`; later accounts register as
+`gateway-account-2`, `gateway-account-3`, and so on. Account `apiKey` and
+`headers` shallowly replace the base fields. `upstreamModelIdSuffix` changes
+each model's upstream id while preserving its user-facing `id`.
+
+`accounts` is extension-owned and is stripped before registration. Fragments
+cannot declare `oauth`: the loader rejects it, the extension never emits a
+`ProviderConfig.oauth` block, and these accounts do not create `/login
+<provider>` flows. Configure their credential references directly. There is no
+automatic rotation, cooldown, failover, or refresh timer.
 
 ## Diagnostics
 
-Build the package, then run:
+Run `senpi-accounts doctor` after building or installing the package. It reports
+the selected config directory, loaded fragments, registered provider ids, and
+whether each credential reference resolves. It prints booleans only, never a
+resolved credential, and exits nonzero when a reference fails. It is read-only.
 
-```sh
-senpi-accounts doctor
-```
+The doctor also identifies an active legacy `~/.config/omo-providers` layer and
+names any provider-id collision with `models.json`, which takes precedence over
+an extension provider.
 
-The doctor reports the selected config directory, every loaded fragment, every
-extension provider id, and a boolean for each `apiKey` or header reference. It
-executes `!command` references using senpi's documented resolution rules but
-prints only `resolves=true` or `resolves=false`, never the command output or an
-environment value. It exits nonzero if a reference cannot resolve, including a
-failed `!command`.
+## ccapi
 
-It also detects the legacy `~/.config/omo-providers` projection layer by
-checking its `.owned-providers.json` ids against `models.json`. An active
-legacy-owned id that collides with an extension provider is named explicitly,
-because `models.json` takes precedence. The doctor is read-only: it does not
-write provider, credential, or runtime-state files.
+The ccapi endpoint is a third-party service, not operated by this project.
+Users supply their own credentials at their own risk. Measured availability was
+low (3 of 12 identical requests returned HTTP 200); do not treat a failed live
+request as proof that fragment registration is wrong.
 
-### Anthropic Messages providers
+For an `anthropic-messages` ccapi fragment, `baseUrl` must not end in `/v1`.
+Senpi appends `/v1/messages`; a trailing suffix produces
+`/v1/v1/messages` and a 404. The regression test in
+`test/provider-registration.e2e.test.ts` locks this behavior.
 
-For `api: "anthropic-messages"`, set `baseUrl` to the server origin or prefix
-**without** a trailing `/v1`: senpi appends `/v1/messages`, so a `/v1` suffix
-would request `/v1/v1/messages`. Set `authHeader: false` for normal Anthropic
-`x-api-key` authentication; `authHeader: true` additionally sends
-`Authorization: Bearer <key>`.
+Set `authHeader` to `false` for an `x-api-key` provider. Otherwise senpi adds
+`Authorization: Bearer`, and providers using `x-api-key` authentication,
+including ccapi, answer 403.
 
-## Reload safety
+## Kiro prerequisite
 
-Provider ownership is held only in module memory. Each clean factory invocation
-registers every valid configured provider and removes only previously owned IDs
-that are no longer defined. If any fragment fails parsing or validation, its
-absence is ambiguous: the extension reports the file-specific error, continues
-registering valid fragments, and retains previously owned providers until a
-later clean invocation confirms removal. The extension neither reads nor writes
-`models.json`, credentials, or runtime state files.
+The Kiro preset is intentionally shipped as a `.disabled` fragment. It is not
+verified until Kiro is installed and logged in locally and a compatible local
+gateway is running. Activate it only after those prerequisites are met, then
+set the gateway URL, available models, and credential reference for that
+gateway. The package does not claim verified Kiro support or invent a Kiro
+endpoint or model list.
+
+## Migration from ~/.config/omo-providers
+
+1. Keep `~/.config/omo-providers` as a dated backup. Do not delete it before
+   the extension is verified.
+2. Install the package, create `~/.config/senpi-accounts/providers.d/`, and
+   copy compatible `*.json` fragments there. Run `senpi-accounts doctor` and
+   verify the expected rows with `senpi --list-models`.
+3. Only after that verification, remove the legacy-owned provider entry from
+   `~/.senpi/agent/models.json` outright and remove the legacy shell hook.
+   Do not leave both layers registering the same id.
+
+Do not mark a transition provider as `"disabled": true` in `models.json`.
+Senpi processes that setting before extension registration and silently deletes
+an extension-registered provider with the same id. Remove the legacy entry
+instead.
+
+## API-subset limitation
+
+The extension API is a strict subset of `models.json`. `whitelist`, `blacklist`,
+`disabled`, `compat`, `cacheRetention`, and `modelOverrides` cannot be
+expressed through `registerProvider`; providers requiring any of them stay in
+`models.json`.
+
+## Version compatibility policy
+
+Supported senpi range: `>=2026.7.28-3-dev.954f53da6 <2027.0.0`, matching the
+bounded peer dependency. `registerProvider` is public but carries no stability
+guarantee. Pin senpi to a tested version and re-test fragments and diagnostics
+before upgrading it.
+
+## Development
+
+`npm run typecheck`, `npm run build`, `npm test`, and `npm run doc-check` are
+the package checks. `npm run doc-check` runs every shell command block in this
+README in an isolated temporary home directory.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT - see [LICENSE](./LICENSE).
