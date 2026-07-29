@@ -234,7 +234,7 @@ directory with a `.json` name:
 
 ```sh
 mkdir -p ~/.config/senpi-accounts/providers.d
-cp /path/to/senpi-accounts/presets/20-kiro.json.disabled \
+cp "$(npm prefix)/presets/20-kiro.json.disabled" \
   ~/.config/senpi-accounts/providers.d/20-kiro.json
 export KIRO_GATEWAY_API_KEY='your-local-gateway-key'
 senpi --list-models
