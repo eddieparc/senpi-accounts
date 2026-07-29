@@ -159,6 +159,35 @@ describe("loadProviderFragments", () => {
 		expect(result.errors[0]?.message).toContain("accounts");
 	});
 
+	it.each(["oauth", "refreshModels", "streamSimple"] as const)(
+		"rejects non-JSON-callable field %s before registration",
+		(field) => {
+			const dir = makeDir("providers.d");
+			const filePath = writeFragment(dir, "10-unsupported.json", {
+				unsupported: { name: "Unsupported", [field]: {} },
+			});
+			const result = load(dir);
+			expect(result.fragments[0]?.providers).toEqual([]);
+			expect(result.errors).toHaveLength(1);
+			const message = result.errors[0]?.message ?? "";
+			expect(message).toContain(filePath);
+			expect(message).toContain(field);
+		},
+	);
+
+	it("rejects invalid JSON provider config values before exposing a typed config", () => {
+		const dir = makeDir("providers.d");
+		const filePath = writeFragment(dir, "10-invalid-type.json", {
+			invalid: { name: false },
+		});
+		const result = load(dir);
+		expect(result.fragments[0]?.providers).toEqual([]);
+		expect(result.errors).toHaveLength(1);
+		const message = result.errors[0]?.message ?? "";
+		expect(message).toContain(filePath);
+		expect(message).toContain("name");
+	});
+
 	it("reports malformed JSON naming the file and still loads the other fragments", () => {
 		const dir = makeDir("providers.d");
 		const badPath = writeFile(dir, "10-bad.json", "{ not json");

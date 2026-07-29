@@ -1,11 +1,12 @@
 /**
  * Provider-fragment loader: discovery, parsing, and schema validation of
- * user-provided provider fragments. Registration with senpi is a later task.
+ * user-provided provider fragments. Registration with senpi happens in index.ts.
  */
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { ProviderConfig, ProviderModelConfig } from "@code-yeongyu/senpi";
 
 export interface LoadFragmentsOptions {
 	env?: NodeJS.ProcessEnv;
@@ -14,7 +15,7 @@ export interface LoadFragmentsOptions {
 
 export interface ProviderFragmentEntry {
 	providerId: string;
-	fields: Record<string, unknown>;
+	fields: ProviderConfig;
 	accounts?: unknown[];
 }
 
@@ -34,7 +35,7 @@ export interface LoadFragmentsResult {
 	errors: FragmentLoadError[];
 }
 
-const ALLOWED_FIELDS = new Set([
+const JSON_PROVIDER_FIELDS = new Set([
 	"name",
 	"baseUrl",
 	"apiKey",
@@ -43,11 +44,9 @@ const ALLOWED_FIELDS = new Set([
 	"extraBody",
 	"authHeader",
 	"models",
-	"refreshModels",
-	"streamSimple",
-	"oauth",
-	"accounts",
 ]);
+
+const NON_JSON_PROVIDER_FIELDS = new Set(["oauth", "refreshModels", "streamSimple"]);
 
 const MODELS_JSON_FIELDS = new Set([
 	"whitelist",
@@ -56,6 +55,24 @@ const MODELS_JSON_FIELDS = new Set([
 	"compat",
 	"cacheRetention",
 	"modelOverrides",
+]);
+
+const MODEL_FIELDS = new Set([
+	"id",
+	"name",
+	"upstreamModelId",
+	"api",
+	"baseUrl",
+	"reasoning",
+	"recoverTextToolCalls",
+	"thinkingLevelMap",
+	"input",
+	"cost",
+	"contextWindow",
+	"maxTokens",
+	"headers",
+	"extraBody",
+	"compat",
 ]);
 
 function pathKind(path: string): "directory" | "other" | "missing" {
@@ -70,6 +87,123 @@ function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isUnknownArray(value: unknown): value is unknown[] {
+	return Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function isJsonValue(value: unknown): boolean {
+	if (value === null || typeof value === "string" || typeof value === "boolean" || isFiniteNumber(value)) {
+		return true;
+	}
+	if (Array.isArray(value)) {
+		return value.every(isJsonValue);
+	}
+	return isObject(value) && Object.values(value).every(isJsonValue);
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+	return isObject(value) && Object.values(value).every(isJsonValue);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+	return isObject(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isStringOrNullRecord(value: unknown): boolean {
+	return isObject(value) && Object.values(value).every((entry) => typeof entry === "string" || entry === null);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: Set<string>): boolean {
+	return Object.keys(value).every((key) => allowedKeys.has(key));
+}
+
+function isModelCost(value: unknown): boolean {
+	if (!isObject(value)) {
+		return false;
+	}
+	if (
+		!isFiniteNumber(value.input) ||
+		!isFiniteNumber(value.output) ||
+		!isFiniteNumber(value.cacheRead) ||
+		!isFiniteNumber(value.cacheWrite)
+	) {
+		return false;
+	}
+	if (!("tiers" in value)) {
+		return true;
+	}
+	return (
+		Array.isArray(value.tiers) &&
+		value.tiers.every(
+			(tier) =>
+				isObject(tier) &&
+				isFiniteNumber(tier.input) &&
+				isFiniteNumber(tier.output) &&
+				isFiniteNumber(tier.cacheRead) &&
+				isFiniteNumber(tier.cacheWrite) &&
+				isFiniteNumber(tier.inputTokensAbove),
+		)
+	);
+}
+
+function isProviderModelConfig(value: unknown): value is ProviderModelConfig {
+	if (!isObject(value) || !hasOnlyKeys(value, MODEL_FIELDS)) {
+		return false;
+	}
+	if (
+		typeof value.id !== "string" ||
+		typeof value.name !== "string" ||
+		typeof value.reasoning !== "boolean" ||
+		!Array.isArray(value.input) ||
+		!value.input.every((input) => input === "text" || input === "image" || input === "video") ||
+		!isModelCost(value.cost) ||
+		!isFiniteNumber(value.contextWindow) ||
+		!isFiniteNumber(value.maxTokens)
+	) {
+		return false;
+	}
+	return (
+		(!("upstreamModelId" in value) || typeof value.upstreamModelId === "string") &&
+		(!("api" in value) || typeof value.api === "string") &&
+		(!("baseUrl" in value) || typeof value.baseUrl === "string") &&
+		(!("recoverTextToolCalls" in value) || typeof value.recoverTextToolCalls === "boolean") &&
+		(!("thinkingLevelMap" in value) || isStringOrNullRecord(value.thinkingLevelMap)) &&
+		(!("headers" in value) || isStringRecord(value.headers)) &&
+		(!("extraBody" in value) || isJsonObject(value.extraBody)) &&
+		(!("compat" in value) || isJsonObject(value.compat))
+	);
+}
+
+function providerConfigIssue(value: Record<string, unknown>): string | undefined {
+	if ("name" in value && typeof value.name !== "string") return "field name must be a string";
+	if ("baseUrl" in value && typeof value.baseUrl !== "string") return "field baseUrl must be a string";
+	if ("apiKey" in value && typeof value.apiKey !== "string") return "field apiKey must be a string";
+	if ("api" in value && typeof value.api !== "string") return "field api must be a string";
+	if ("headers" in value && !isStringRecord(value.headers)) return "field headers must map strings to strings";
+	if ("extraBody" in value && !isJsonObject(value.extraBody)) return "field extraBody must be a JSON object";
+	if ("authHeader" in value && typeof value.authHeader !== "boolean") return "field authHeader must be a boolean";
+	if (
+		"models" in value &&
+		(!Array.isArray(value.models) || !value.models.every(isProviderModelConfig))
+	) {
+		return "field models must contain valid provider model definitions";
+	}
+	return undefined;
+}
+
+/**
+ * This is the explicit JSON-to-public-API boundary. Fragments are parsed JSON,
+ * then every emitted field is checked before TypeScript narrows it to the
+ * bounded public ProviderConfig surface accepted by registerProvider().
+ */
+function isJsonProviderConfig(value: unknown): value is ProviderConfig {
+	return isObject(value) && providerConfigIssue(value) === undefined;
+}
+
 export function resolveFragmentDir(options?: LoadFragmentsOptions): string | null {
 	const hasInjectedOptions = options !== undefined;
 	const env = options?.env ?? process.env;
@@ -79,8 +213,7 @@ export function resolveFragmentDir(options?: LoadFragmentsOptions): string | nul
 		return pathKind(envDir) === "directory" ? envDir : null;
 	}
 
-	const homeDir = options?.homeDir ??
-		(hasInjectedOptions ? undefined : env.HOME ?? homedir());
+	const homeDir = options?.homeDir ?? (hasInjectedOptions ? undefined : env.HOME ?? homedir());
 	if (!homeDir) {
 		return null;
 	}
@@ -109,10 +242,7 @@ function validateEntry(
 ): { entry?: ProviderFragmentEntry; error?: FragmentLoadError } {
 	if (!isObject(entry)) {
 		return {
-			error: errorFor(
-				filePath,
-				`provider ${providerId} must be a JSON object`,
-			),
+			error: errorFor(filePath, `provider ${providerId} must be a JSON object`),
 		};
 	}
 
@@ -125,34 +255,45 @@ function validateEntry(
 				),
 			};
 		}
-		if (!ALLOWED_FIELDS.has(key)) {
+		if (NON_JSON_PROVIDER_FIELDS.has(key)) {
+			return {
+				error: errorFor(filePath, `field ${key} cannot be expressed in a JSON provider fragment`),
+			};
+		}
+		if (key !== "accounts" && !JSON_PROVIDER_FIELDS.has(key)) {
 			return {
 				error: errorFor(filePath, `unknown provider field ${key}`),
 			};
 		}
 	}
 
-	if ("accounts" in entry && !Array.isArray(entry.accounts)) {
+	const accounts = entry.accounts;
+	if (accounts !== undefined && !isUnknownArray(accounts)) {
 		return {
-			error: errorFor(filePath, `field accounts must be an array`),
+			error: errorFor(filePath, "field accounts must be an array"),
 		};
 	}
 
-	const fields = { ...entry };
-	const accounts = fields.accounts;
+	const fields: Record<string, unknown> = { ...entry };
 	delete fields.accounts;
+	const issue = providerConfigIssue(fields);
+	if (issue) {
+		return { error: errorFor(filePath, issue) };
+	}
+	if (!isJsonProviderConfig(fields)) {
+		return { error: errorFor(filePath, "provider config must use JSON-compatible public fields") };
+	}
+
 	return {
 		entry: {
 			providerId,
 			fields,
-			...(accounts === undefined ? {} : { accounts: accounts as unknown[] }),
+			...(accounts === undefined ? {} : { accounts }),
 		},
 	};
 }
 
-export function loadProviderFragments(
-	options?: LoadFragmentsOptions,
-): LoadFragmentsResult {
+export function loadProviderFragments(options?: LoadFragmentsOptions): LoadFragmentsResult {
 	const dir = resolveFragmentDir(options);
 	if (!dir) {
 		return { dir: null, fragments: [], errors: [] };
@@ -182,9 +323,7 @@ export function loadProviderFragments(
 		}
 
 		if (!isObject(parsed)) {
-			errors.push(
-				errorFor(filePath, "fragment must be a JSON object mapping provider IDs"),
-			);
+			errors.push(errorFor(filePath, "fragment must be a JSON object mapping provider IDs"));
 			continue;
 		}
 
