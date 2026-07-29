@@ -45,6 +45,14 @@ The `pi` block in `package.json` points senpi at the built entry
 senpi's extension mechanism (for example,
 `senpi -e /path/to/senpi-accounts/dist/index.js`).
 
+### Anthropic Messages providers
+
+For `api: "anthropic-messages"`, set `baseUrl` to the server origin or prefix
+**without** a trailing `/v1`: senpi appends `/v1/messages`, so a `/v1` suffix
+would request `/v1/v1/messages`. Set `authHeader: false` for normal Anthropic
+`x-api-key` authentication; `authHeader: true` additionally sends
+`Authorization: Bearer <key>`.
+
 ## Reload safety
 
 Provider ownership is held only in module memory. Each clean factory invocation
