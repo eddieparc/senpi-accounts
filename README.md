@@ -13,6 +13,7 @@ fills only the gaps stock leaves.
 | **Kiro** subscription provider (Google / GitHub / AWS Builder ID) | this addon |
 | Multi-account pool with pin, rotation, 429 failover and timed failback | this addon |
 | Cache-preserving conversation affinity + usage-aware placement | this addon |
+| **OpenAI Codex account pool** (opt-in, reuses stock's Codex API) | this addon |
 | `/usage` dashboard across every subscription | this addon |
 | Anthropic multi-account | **stock** (`/claude-account`) |
 | OpenAI Codex fast mode | **stock** (`service-tier`, `-fast` models) |
@@ -69,6 +70,32 @@ SENPI_CODING_AGENT_DIR=~/.senpi/agent \
 
 It prints the authorize URL, captures the localhost callback automatically, and appends
 the account to the pool.
+
+## Other subscriptions
+
+**Alibaba Token Plan** and **OpenCode Go** are stock providers that authenticate
+with an API key, so they need nothing from this addon:
+
+```
+/login alibaba-token-plan     # or set ALIBABA_TOKEN_PLAN_API_KEY
+/login opencode-go            # or set OPENCODE_API_KEY
+```
+
+Both appear in `/usage` once configured.
+
+**Anthropic** multi-account is stock; use `/claude-account`. This addon does not
+touch it.
+
+**OpenAI Codex** works out of the box as stock `openai-codex`. If you want to pool
+several ChatGPT subscriptions, opt in:
+
+```bash
+export SENPI_ACCOUNTS_CODEX_POOL=1
+```
+
+That registers a `codex-pool` provider that reuses stock's Codex Responses API —
+so fast mode and service tiers keep working — while adding the same account pool,
+affinity and failover as Kiro. Manage it with `/login codex-pool`.
 
 ## How routing works
 
