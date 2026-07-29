@@ -45,6 +45,27 @@ The `pi` block in `package.json` points senpi at the built entry
 senpi's extension mechanism (for example,
 `senpi -e /path/to/senpi-accounts/dist/index.js`).
 
+## Diagnostics
+
+Build the package, then run:
+
+```sh
+senpi-accounts doctor
+```
+
+The doctor reports the selected config directory, every loaded fragment, every
+extension provider id, and a boolean for each `apiKey` or header reference. It
+executes `!command` references using senpi's documented resolution rules but
+prints only `resolves=true` or `resolves=false`, never the command output or an
+environment value. It exits nonzero if a reference cannot resolve, including a
+failed `!command`.
+
+It also detects the legacy `~/.config/omo-providers` projection layer by
+checking its `.owned-providers.json` ids against `models.json`. An active
+legacy-owned id that collides with an extension provider is named explicitly,
+because `models.json` takes precedence. The doctor is read-only: it does not
+write provider, credential, or runtime-state files.
+
 ### Anthropic Messages providers
 
 For `api: "anthropic-messages"`, set `baseUrl` to the server origin or prefix
