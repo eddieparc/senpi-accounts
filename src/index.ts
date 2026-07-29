@@ -17,7 +17,22 @@ export type SenpiExtensionAPI = Resolved<ExtensionAPI>;
 
 export const EXTENSION_ID = "@eddieparc/senpi-accounts";
 
-const ownedProviderIds = new Set<string>();
+// Senpi creates a fresh extension module and API object on reload, but retains
+// the EventBus owned by its resource loader. A global symbol lets the fresh
+// module find this extension's host-scoped state without writing a file.
+const ownedProviderIdsKey = Symbol.for(`${EXTENSION_ID}:owned-provider-ids`);
+
+function getOwnedProviderIds(pi: SenpiExtensionAPI): Set<string> {
+	const eventBus = pi.events as unknown as Record<symbol, unknown>;
+	const existing = eventBus[ownedProviderIdsKey];
+	if (existing instanceof Set) {
+		return existing as Set<string>;
+	}
+
+	const ownedProviderIds = new Set<string>();
+	Object.defineProperty(eventBus, ownedProviderIdsKey, { value: ownedProviderIds });
+	return ownedProviderIds;
+}
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -35,6 +50,7 @@ function reportError(message: string): void {
  * invocation confirms their removal.
  */
 export default async function senpiAccounts(pi: SenpiExtensionAPI): Promise<void> {
+	const ownedProviderIds = getOwnedProviderIds(pi);
 	const result = loadProviderFragments();
 	for (const error of result.errors) {
 		reportError(error.message);
