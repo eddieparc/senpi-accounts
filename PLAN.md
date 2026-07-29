@@ -1,4 +1,26 @@
-# senpi-accounts 실행 계획 (승인 대기)
+# senpi-accounts 실행 계획
+
+## 현재 상태 (2026-07-30 검증 완료)
+
+| 항목 | 상태 | 근거 |
+|---|---|---|
+| Kiro opus-5 실호출 | **동작** | 실제 `~/.senpi/agent`에서 `PROD_KIRO_OK` 응답 |
+| Google 로그인 (jgp3620) | **완료** | OAuth 콜백 캡처 → 토큰 저장 → 이메일 확인 |
+| 429/인증 실패 자동 전환 | **실API 검증** | poisoned 계정 주입 → 업스트림 거부 → `jgp3620`으로 전환 후 성공 |
+| 캐시 어피니티 | **동작** | 대화 지문 바인딩이 실제로 기록됨 |
+| `/usage` 대시보드 | **동작** | kiro + claude-agent-sdk + openai-codex 동시 집계 |
+| 테스트 | 90개 통과 | `npm test` |
+| 타입체크 | 통과 | `npm run typecheck` |
+| `/fast` 업스트림 버그 | 이슈 등록 | code-yeongyu/senpi#499 |
+
+### 남은 작업
+- Kiro 2·3번째 계정 등록: Kiro 포털이 기존 세션을 재사용해 계정 선택기를 건너뜀.
+  포털에서 명시적 로그아웃 후 재로그인해야 다른 계정이 잡힌다. 로직 자체는
+  poisoned-account 실험으로 다계정 전환이 검증됨.
+- Codex 다중계정, Alibaba/OpenCode Go 대시보드 연동, 키체인 옵션, npm 배포.
+
+---
+
 
 조사 근거는 `DESIGN.md` 참조. 이 문서는 "무엇을 어떤 순서로 만들 것인가"만 다룬다.
 

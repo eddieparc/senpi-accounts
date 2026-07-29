@@ -138,3 +138,47 @@ describe("extension entry", () => {
 		expect(commands).toContain("senpi-accounts");
 	});
 });
+
+describe("codex pool provider", () => {
+	it("stays disabled until explicitly opted in", async () => {
+		const { codexProviderPackage } = await import("../src/providers/codex/index.js");
+		const pkg = codexProviderPackage();
+		const reason = pkg.enabled?.({} as NodeJS.ProcessEnv);
+		expect(typeof reason).toBe("string");
+		expect(reason).toMatch(/SENPI_ACCOUNTS_CODEX_POOL/);
+	});
+
+	it("enables when opted in and builds against stock's Codex API", async () => {
+		const { codexProviderPackage } = await import("../src/providers/codex/index.js");
+		const pkg = codexProviderPackage();
+		expect(pkg.enabled?.({ SENPI_ACCOUNTS_CODEX_POOL: "1" } as NodeJS.ProcessEnv)).toBe(true);
+
+		const config = await pkg.build({ env: {} as NodeJS.ProcessEnv, agentDir: agentDir() });
+		// Reuses stock's Codex Responses API, which is what keeps /fast and
+		// service-tier behaviour intact rather than reimplementing them.
+		expect(config.api).toBe("openai-codex-responses");
+		expect(config.oauth?.name).toMatch(/OpenAI/);
+	});
+});
+
+describe("codex token parsing", () => {
+	it("extracts the ChatGPT account id and email from an access token", async () => {
+		const { accountIdFromToken, emailFromToken } = await import("../src/providers/codex/oauth.js");
+		const payload = Buffer.from(
+			JSON.stringify({
+				email: "user@example.com",
+				"https://api.openai.com/auth": { chatgpt_account_id: "acct-123" },
+			}),
+		).toString("base64url");
+		const token = `header.${payload}.signature`;
+
+		expect(accountIdFromToken(token)).toBe("acct-123");
+		expect(emailFromToken(token)).toBe("user@example.com");
+	});
+
+	it("returns undefined for a malformed token instead of throwing", async () => {
+		const { accountIdFromToken } = await import("../src/providers/codex/oauth.js");
+		expect(accountIdFromToken("not-a-jwt")).toBeUndefined();
+		expect(accountIdFromToken("a.!!!.c")).toBeUndefined();
+	});
+});
