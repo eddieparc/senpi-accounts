@@ -75,7 +75,22 @@ So a second Kiro account needs the Google account switched first:
    **Sign Out**.
 2. Sign out of Google, or switch the default account, at
    `https://accounts.google.com/Logout`, then sign in as the account you want.
+   On these accounts Google requires a **passkey** (biometric/hardware), so this
+   step cannot be automated — it needs a human at the machine.
 3. Run the scripted login below and it will bind that account.
+
+All three Kiro auth methods were exercised and all three resolve to whichever
+identity the browser/AWS session already holds:
+
+| Method | Result |
+|---|---|
+| Google | Kiro's Cognito session re-federates the current Google account |
+| GitHub | same Cognito session behaviour |
+| AWS Builder ID | device-code flow completes (`요청 승인됨`) but returns the same AWS identity |
+
+So switching accounts is a browser/AWS session action, not something the addon
+can drive. The duplicate guard below exists precisely because these flows all
+*succeed* while silently returning the identity you already had.
 
 Verify which identity was actually captured — the login prints the email:
 
