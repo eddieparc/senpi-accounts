@@ -155,6 +155,14 @@ skipped; every other provider still registers. Providers never import each other
 Credentials live in senpi's own `auth.json`, written atomically with `0600` permissions.
 A corrupt `auth.json` is never overwritten.
 
+### Keychain (optional, macOS)
+
+`src/core/keychain.ts` can hold pools in the macOS Keychain instead of the filesystem.
+It is **off by default** because `auth.json` already matches stock's protection, and it
+is only used when `keychainAvailable()` proves a full write/read round-trip succeeds —
+presence of the `security` binary is not enough, since a locked or access-denied keychain
+would silently drop credentials.
+
 ## Development
 
 ```bash
