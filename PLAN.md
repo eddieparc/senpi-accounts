@@ -13,11 +13,34 @@
 | 타입체크 | 통과 | `npm run typecheck` |
 | `/fast` 업스트림 버그 | 이슈 등록 | code-yeongyu/senpi#499 |
 
-### 남은 작업
-- Kiro 2·3번째 계정 등록: Kiro 포털이 기존 세션을 재사용해 계정 선택기를 건너뜀.
-  포털에서 명시적 로그아웃 후 재로그인해야 다른 계정이 잡힌다. 로직 자체는
-  poisoned-account 실험으로 다계정 전환이 검증됨.
-- Codex 다중계정, Alibaba/OpenCode Go 대시보드 연동, 키체인 옵션, npm 배포.
+### 남은 작업 (사용자 액션 필요)
+
+**1. Kiro 2·3번째 계정 등록 — 브라우저 제약**
+
+Kiro의 IdP(Cognito)가 Google 계정 선택과 **별도로** 자체 세션을 유지한다.
+그래서 Google 계정을 바꿔도 Kiro는 이전 신원(jgp3620)을 그대로 재사용한다.
+자동화로 여러 방법을 시도했으나(포털 로그아웃, "Show all Sign In options",
+Google 계정 선택기) 모두 같은 계정으로 귀착함.
+
+해결법(수동, 1회성): 각 Aside 프로필을 분리해 쓰거나, 브라우저에서
+`https://app.kiro.dev/settings/account` → 로그아웃 → 시크릿 창으로 다음 로그인을
+진행한 뒤 아래를 실행:
+
+```bash
+SENPI_CODING_AGENT_DIR=~/.senpi/agent \
+  npx tsx scripts/login.mts jgplabs google
+```
+
+**다계정 로직 자체는 검증됨**: poisoned 계정을 주입해 실제 Kiro API가 거부하게
+하자 자동으로 정상 계정으로 전환되어 응답에 성공했고, 바인딩도 성공한 계정으로
+기록됐다. 계정만 넣으면 로테이션/페일오버는 그대로 동작한다.
+
+**2. npm 배포** — `npm login` 필요. 패키지는 준비 완료(52.6 kB)이고,
+패킹한 tarball을 별도 프로젝트에 설치해 opus-5 호출까지 검증함.
+
+```bash
+npm login && npm publish --access public
+```
 
 ---
 
