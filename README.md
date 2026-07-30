@@ -65,13 +65,27 @@ Both were reported upstream rather than worked around here:
 
 Requires senpi `>= 2026.7.28` (verified against `2026.7.29-6`).
 
-**From npm:**
+**One command** — the recommended path, verified end to end from a clean sandbox:
 
 ```bash
-senpi install npm:@eddieparc/senpi-accounts
+npm install github:eddieparc/senpi-accounts
 ```
 
-**From source** — no npm account needed, and the path this repo is tested against:
+npm runs the package's `prepare` script for a git dependency, so `dist/` is
+compiled during install. Then point senpi at the built entry:
+
+```text
+senpi -e ./node_modules/@eddieparc/senpi-accounts
+```
+
+Or use the tarball attached to the
+[v0.1.0 release](https://github.com/eddieparc/senpi-accounts/releases/tag/v0.1.0):
+
+```text
+npm install ./eddieparc-senpi-accounts-0.1.0.tgz
+```
+
+**From source** — the path this repo is developed against:
 
 ```bash
 git clone https://github.com/eddieparc/senpi-accounts.git
@@ -80,9 +94,9 @@ npm install
 npm run build
 ```
 
-Then either load it per-run:
+Then either load it per-run (substitute your own checkout path):
 
-```bash
+```text
 senpi -e /absolute/path/to/senpi-accounts
 ```
 
@@ -98,9 +112,9 @@ or enable it for every session by adding the built entry point to `extensions` i
 Point at `dist/index.js`, not the repository root. senpi enumerates a bare
 directory and would load `dist/` and `src/` as two separate extensions.
 
-Verify it loaded:
+Verify it loaded — this should print the Kiro models:
 
-```bash
+```text
 senpi -e /absolute/path/to/senpi-accounts --list-models | grep kiro
 ```
 
@@ -180,7 +194,7 @@ yields no extra quota.
 
 For CI or headless setup:
 
-```bash
+```text
 SENPI_CODING_AGENT_DIR=~/.senpi/agent \
   npx tsx scripts/login.mts <account-name> [google|github|builder-id]
 ```

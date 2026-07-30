@@ -39,6 +39,10 @@ if (blocks.length === 0) {
 }
 
 const home = mkdtempSync(resolve(tmpdir(), "senpi-accounts-doc-check-"));
+// The README's install blocks install packages and clone the repository. Running them
+// in the repository root would rewrite package.json and leave a nested checkout behind,
+// so they get a scratch working directory of their own.
+const workdir = mkdtempSync(resolve(tmpdir(), "senpi-accounts-doc-work-"));
 const script = ["set -eu", ...blocks.map((block, index) => `# README command block ${index + 1}\n${block}`)];
 if (command) {
 	script.push(`# injected verification command\n${command}`);
@@ -48,7 +52,7 @@ console.log(`doc-check: executing ${blocks.length} README shell command block(s)
 let exitCode = 1;
 try {
 	const result = spawnSync("/bin/sh", ["-eu", "-c", script.join("\n\n")], {
-		cwd: repositoryRoot,
+		cwd: workdir,
 		env: {
 			...process.env,
 			HOME: home,
@@ -71,7 +75,8 @@ try {
 	}
 } finally {
 	rmSync(home, { recursive: true, force: true });
-	console.log("doc-check: cleanup: removed isolated temporary home");
+	rmSync(workdir, { recursive: true, force: true });
+	console.log("doc-check: cleanup: removed isolated temporary home and working directory");
 }
 
 process.exit(exitCode);
