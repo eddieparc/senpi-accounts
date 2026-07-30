@@ -429,10 +429,21 @@ export interface KiroUsage {
 	email?: string;
 	usedCount: number;
 	limitCount: number;
+	/** Subscription tier, e.g. "KIRO PRO MAX". */
+	plan?: string;
+	/** Epoch millis when the allowance resets. */
+	resetAt?: number;
 }
 
 /**
- * Read the account's agentic-request allowance.
+ * Read the account's credit allowance.
+ *
+ * The response carries per-resource rows in `usageBreakdownList`, *not*
+ * top-level `usedCount`/`limitCount` fields. Reading only the top level yielded
+ * 0/0 for every account and made this look like an unmetered plan, which
+ * silently disabled usage-aware placement. The real numbers live in the `CREDIT`
+ * row's `*WithPrecision` fields, which match what the Kiro account page shows
+ * (e.g. 0.58 used / 5000 covered, resetting on the 1st).
  *
  * Drives both the usage dashboard and usage-aware placement. Callers treat a
  * throw as "unknown headroom" rather than an error, so this never blocks a
@@ -458,23 +469,47 @@ export async function fetchKiroUsage(
 	if (!response.ok) throw new KiroAuthError(`Kiro usage request failed (HTTP ${response.status})`, { status: response.status });
 
 	const body = (await response.json()) as JsonRecord;
-	const count = (name: string, fallback: string): number => {
-		for (const key of [name, fallback]) {
-			const value = body[key];
+
+	const num = (record: JsonRecord, ...names: string[]): number | undefined => {
+		for (const name of names) {
+			const value = record[name];
 			if (typeof value === "number" && Number.isFinite(value)) return value;
 		}
-		return 0;
+		return undefined;
 	};
+
+	// Prefer the CREDIT row; fall back to the first row so a renamed resource type
+	// still yields numbers rather than silently reporting an unmetered plan.
+	const rows = Array.isArray(body.usageBreakdownList) ? (body.usageBreakdownList as JsonRecord[]) : [];
+	const row =
+		rows.find((entry) => str(entry.resourceType) === "CREDIT") ??
+		rows.find((entry) => num(entry, "usageLimitWithPrecision", "usageLimit") !== undefined) ??
+		rows[0];
+
+	const used = row ? num(row, "currentUsageWithPrecision", "currentUsage") : undefined;
+	const limit = row ? num(row, "usageLimitWithPrecision", "usageLimit") : undefined;
 
 	const userInfo = body.userInfo;
 	const email =
 		typeof userInfo === "object" && userInfo !== null ? str((userInfo as JsonRecord).email) : undefined;
 
+	const subscription = body.subscriptionInfo;
+	const plan =
+		typeof subscription === "object" && subscription !== null
+			? str((subscription as JsonRecord).subscriptionTitle)
+			: undefined;
+
+	// `nextDateReset` is epoch *seconds* (and arrives in exponential notation).
+	const resetSeconds = row ? num(row, "nextDateReset") : undefined;
+	const resetAt = resetSeconds ?? num(body, "nextDateReset");
+
 	const usage: KiroUsage = {
-		usedCount: count("usedCount", "currentUsage"),
-		limitCount: count("limitCount", "maxUsage"),
+		usedCount: used ?? 0,
+		limitCount: limit ?? 0,
 	};
 	if (email) usage.email = email;
+	if (plan) usage.plan = plan;
+	if (resetAt !== undefined) usage.resetAt = Math.round(resetAt * 1000);
 	return usage;
 }
 

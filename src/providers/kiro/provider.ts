@@ -128,20 +128,49 @@ export interface KiroProviderDeps {
 	usage?: UsageCache;
 }
 
+/**
+ * Read one account's usage, refreshing an expired access token first.
+ *
+ * An expired token makes the usage endpoint answer 403, which previously read as
+ * "headroom unknown" and quietly excluded that account from usage-aware
+ * placement. The refresh is best-effort and its result is not persisted here:
+ * this is a read-only probe, and the request path refreshes and stores tokens on
+ * its own.
+ */
+export async function readKiroHeadroom(
+	slot: AccountSlot,
+	deps: { refresh?: (tokens: KiroTokens) => Promise<KiroTokens> } = {},
+): Promise<number | undefined> {
+	const refreshTokens = deps.refresh ?? refreshKiro;
+	let tokens = slotToTokens(slot);
+	if (Date.now() >= slot.expires) {
+		try {
+			tokens = await refreshTokens(tokens);
+		} catch {
+			return undefined;
+		}
+	}
+	try {
+		const usage = await fetchKiroUsage(tokens);
+		if (usage.limitCount <= 0) return undefined;
+		return Math.max(0, 1 - usage.usedCount / usage.limitCount);
+	} catch {
+		return undefined;
+	}
+}
+
 /** Live per-account headroom, 0..1, from Kiro's own usage-limits endpoint. */
-function kiroUsageCache(agentDir: string, readState: typeof readPool): UsageCache {
+function kiroUsageCache(
+	agentDir: string,
+	readState: typeof readPool,
+	refresh?: (tokens: KiroTokens) => Promise<KiroTokens>,
+): UsageCache {
 	return createUsageCache(async () => {
 		const state = readState(agentDir, KIRO_PROVIDER_ID);
 		const entries = await Promise.all(
-			state.accounts.map(async (slot) => {
-				try {
-					const usage = await fetchKiroUsage(slotToTokens(slot));
-					const limit = usage.limitCount > 0 ? usage.limitCount : undefined;
-					return [slot.name, limit ? Math.max(0, 1 - usage.usedCount / limit) : undefined] as const;
-				} catch {
-					return [slot.name, undefined] as const;
-				}
-			}),
+			state.accounts.map(
+				async (slot) => [slot.name, await readKiroHeadroom(slot, refresh ? { refresh } : {})] as const,
+			),
 		);
 		return Object.fromEntries(entries);
 	});
@@ -153,7 +182,7 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 	const refreshTokens = deps.refresh ?? refreshKiro;
 	const makeStream = deps.createStream ?? createKiroStream;
 	// One cache per provider instance, so the TTL is shared across requests.
-	const usageCache = deps.usage ?? kiroUsageCache(agentDir, readState);
+	const usageCache = deps.usage ?? kiroUsageCache(agentDir, readState, refreshTokens);
 
 	return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
 		// Read per request so a login or pin made elsewhere takes effect on the

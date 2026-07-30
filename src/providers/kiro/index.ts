@@ -13,7 +13,13 @@ import { emptyPool, readPool, type StoredPool } from "../../core/store.js";
 import type { ProviderBuildContext, ProviderPackage } from "../../core/types.js";
 import { KIRO_AUTH_METHOD_LABELS, type KiroAuthMethod, KIRO_PROVIDER_ID } from "./config.js";
 import { fetchKiroUsage, type KiroTokens, loginKiro } from "./oauth.js";
-import { buildKiroProviderConfig, type KiroProviderDeps, slotToTokens, tokensToSlot } from "./provider.js";
+import {
+	buildKiroProviderConfig,
+	type KiroProviderDeps,
+	readKiroHeadroom,
+	slotToTokens,
+	tokensToSlot,
+} from "./provider.js";
 
 export { KIRO_PROVIDER_ID, KIRO_MODELS, resolveModels } from "./config.js";
 export { loginKiro, refreshKiro, fetchKiroUsage, KiroAuthError, type KiroTokens } from "./oauth.js";
@@ -228,16 +234,11 @@ export function kiroProviderPackage(deps: KiroProviderDeps = {}): ProviderPackag
 		},
 		async accountUsage(context) {
 			const state = readPool(context.agentDir, KIRO_PROVIDER_ID);
+			// Shares readKiroHeadroom with routing so the dashboard and placement can
+			// never disagree, and so an expired token is refreshed rather than read as
+			// "unknown".
 			const entries = await Promise.all(
-				state.accounts.map(async (slot) => {
-					try {
-						const usage = await fetchKiroUsage(slotToTokens(slot));
-						const limit = usage.limitCount > 0 ? usage.limitCount : undefined;
-						return [slot.name, limit ? Math.max(0, 1 - usage.usedCount / limit) : undefined] as const;
-					} catch {
-						return [slot.name, undefined] as const;
-					}
-				}),
+				state.accounts.map(async (slot) => [slot.name, await readKiroHeadroom(slot)] as const),
 			);
 			return Object.fromEntries(entries);
 		},
