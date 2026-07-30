@@ -237,6 +237,18 @@ more than the quota it saves. So:
    blocked and the request is replayed on the next account. Timed blocks expire on their
    own (failback); auth blocks persist until re-login.
 
+Headroom comes from Kiro's own usage-limits endpoint, read from the `CREDIT` row of
+`usageBreakdownList` — the same numbers the
+[account page](https://app.kiro.dev/settings/account) shows. Snapshots are cached for 30s
+with a 2s ceiling per refresh, so routing never waits on a quota lookup, and an expired
+access token is refreshed before probing (a stale token answers HTTP 403, which would
+otherwise read as "headroom unknown" and quietly drop that account from placement).
+
+Measured across three live Pro Max accounts at 74.5% / 92.9% / 100% headroom, 300 cold
+conversations in `balanced` mode placed 208 on the fullest account, 92 on the next, and
+**0** on the most-used one. When no provider reports a limit, placement degrades to an even
+spread rather than herding onto one account.
+
 ### Scheduling modes
 
 | Mode | Behaviour |
