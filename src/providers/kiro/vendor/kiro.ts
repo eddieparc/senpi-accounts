@@ -774,6 +774,7 @@ function ensureToolCall(stream: AssistantMessageEventStream, output: AssistantMe
   state.hasToolCalls = true;
   closeTextBlock(stream, output, state);
   closeThinkingBlock(stream, output, state);
+  closeToolCalls(stream, output, state);
   const contentIndex = output.content.length;
   output.content.push(toolCall);
   stream.push({ type: "toolcall_start", contentIndex, partial: output });
