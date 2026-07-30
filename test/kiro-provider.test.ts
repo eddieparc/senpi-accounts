@@ -181,6 +181,33 @@ describe("Kiro provider streaming", () => {
 		expect(Object.values(persisted?.bindings ?? {})).toHaveLength(1);
 	});
 
+	it("closes the upstream iterator when a failure arrives before any delta", async () => {
+		const upstreamReturn = vi.fn(async () => ({ done: true as const, value: undefined }));
+		const upstream: AsyncIterable<Record<string, unknown>> = {
+			[Symbol.asyncIterator]() {
+				return {
+					next: async () => ({
+						done: false as const,
+						value: { type: "error", error: { errorMessage: "HTTP 429: rate limited" } },
+					}),
+					return: upstreamReturn,
+				};
+			},
+		};
+		const streamSimple = createKiroStreamSimple("/tmp/senpi-accounts-test", {
+			readPoolState: () => pool(),
+			writePoolState: vi.fn(),
+			usage: { get: () => undefined, refresh: async () => ({}) },
+			createStream: (() => () => upstream as unknown as AssistantMessageEventStream) as never,
+		});
+		const iterator = (
+			streamSimple(model(), context()) as unknown as AsyncIterable<Record<string, unknown>>
+		)[Symbol.asyncIterator]();
+
+		await expect(iterator.next()).rejects.toThrow("HTTP 429");
+		expect(upstreamReturn).toHaveBeenCalledOnce();
+	});
+
 	it("closes the upstream iterator when the consumer cancels during buffered events", async () => {
 		const upstreamReturn = vi.fn(async () => ({ done: true as const, value: undefined }));
 		let pulls = 0;

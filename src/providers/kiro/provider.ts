@@ -114,18 +114,27 @@ function isVisibleDelta(event: KiroStreamEvent): boolean {
  * A failure before the first visible delta is safe to retry on another account.
  * Once a delta arrives, return the still-open iterator so the caller can stream
  * it live instead of waiting for the complete response.
+ *
+ * A pre-delta failure abandons this iterator -- the turn is about to be retried
+ * on another account -- so it is closed here. Without that, every failover would
+ * leave the previous attempt's upstream response open.
  */
 async function prepareStream(stream: AssistantMessageEventStream): Promise<PreparedKiroStream> {
 	const iterator = (stream as AsyncIterable<KiroStreamEvent>)[Symbol.asyncIterator]();
 	const buffered: KiroStreamEvent[] = [];
 
-	for (;;) {
-		const next = await iterator.next();
-		if (next.done) return { buffered };
-		const error = streamError(next.value);
-		if (error) throw error;
-		buffered.push(next.value);
-		if (isVisibleDelta(next.value)) return { buffered, tail: iterator };
+	try {
+		for (;;) {
+			const next = await iterator.next();
+			if (next.done) return { buffered };
+			const error = streamError(next.value);
+			if (error) throw error;
+			buffered.push(next.value);
+			if (isVisibleDelta(next.value)) return { buffered, tail: iterator };
+		}
+	} catch (error) {
+		await iterator.return?.();
+		throw error;
 	}
 }
 
