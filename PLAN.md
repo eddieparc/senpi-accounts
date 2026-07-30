@@ -1,46 +1,30 @@
 # senpi-accounts 실행 계획
 
-## 현재 상태 (2026-07-30 검증 완료)
+## 현재 상태 (2026-07-31, v0.2.1 배포 완료)
 
 | 항목 | 상태 | 근거 |
 |---|---|---|
-| Kiro opus-5 실호출 | **동작** | 실제 `~/.senpi/agent`에서 `PROD_KIRO_OK` 응답 |
-| Google 로그인 (jgp3620) | **완료** | OAuth 콜백 캡처 → 토큰 저장 → 이메일 확인 |
-| 429/인증 실패 자동 전환 | **실API 검증** | poisoned 계정 주입 → 업스트림 거부 → `jgp3620`으로 전환 후 성공 |
-| 캐시 어피니티 | **동작** | 대화 지문 바인딩이 실제로 기록됨 |
-| `/usage` 대시보드 | **동작** | kiro + claude-agent-sdk + openai-codex 동시 집계 |
-| 테스트 | 90개 통과 | `npm test` |
+| npm 배포 | **완료** | `@eddieparc/senpi-accounts@0.2.1` public, `npm view` latest=0.2.1 |
+| Kiro 계정 3개 | **완료** | `jgp3620`, `jgplabs`, `jgplabs01` (auth.json 계정 풀) |
+| Kiro opus-5 실호출 | **동작** | 격리 샌드박스에서 레지스트리 설치본으로 `ULW_REGISTRY_OK_20260731` 응답 |
+| 실시간 스트리밍 | **동작** | 첫 visible delta까지만 버퍼, 이후 live iterator |
+| 429/인증 실패 자동 전환 | **실API 검증** | 전환·차단 상태가 모든 전이에서 디스크에 영속 |
+| 도구 스키마 호환 | **동작** | object union flatten, const→enum, additionalProperties 제거 |
+| 모델 카탈로그 | **19개** | Kiro CLI 2.15.2 기준, override dedupe |
+| 진단 로그 | **opt-in** | `KIRO_DEBUG=1`, 자격증명 리댁션 확인 |
+| OpenGateway 프로바이더 | **동작** | `/login` API-key 경로, `moonshotai/kimi-k3-ultrafast` |
+| `/usage` 대시보드 | **동작** | kiro 3계정 잔여량 집계 |
+| 테스트 | 207개 통과 | `npm test` (22 files) |
 | 타입체크 | 통과 | `npm run typecheck` |
-| `/fast` 업스트림 버그 | 이슈 등록 | code-yeongyu/senpi#499 |
+| README 실행 검증 | 통과 | `node scripts/check-readme.mjs` |
+| `/fast` 업스트림 버그 | 이슈 등록 | code-yeongyu/senpi#499 (senpi#503에서 수정) |
 
-### 남은 작업 (사용자 액션 필요)
+senpi `2026.7.30` 기준으로 검증했다. 증거는
+`Eddie-Personal-Space/evidence/ulw-senpi-accounts-publish/`.
 
-**1. Kiro 2·3번째 계정 등록 — 브라우저 제약**
+### 남은 작업
 
-Kiro의 IdP(Cognito)가 Google 계정 선택과 **별도로** 자체 세션을 유지한다.
-그래서 Google 계정을 바꿔도 Kiro는 이전 신원(jgp3620)을 그대로 재사용한다.
-자동화로 여러 방법을 시도했으나(포털 로그아웃, "Show all Sign In options",
-Google 계정 선택기) 모두 같은 계정으로 귀착함.
-
-해결법(수동, 1회성): 각 Aside 프로필을 분리해 쓰거나, 브라우저에서
-`https://app.kiro.dev/settings/account` → 로그아웃 → 시크릿 창으로 다음 로그인을
-진행한 뒤 아래를 실행:
-
-```bash
-SENPI_CODING_AGENT_DIR=~/.senpi/agent \
-  npx tsx scripts/login.mts jgplabs google
-```
-
-**다계정 로직 자체는 검증됨**: poisoned 계정을 주입해 실제 Kiro API가 거부하게
-하자 자동으로 정상 계정으로 전환되어 응답에 성공했고, 바인딩도 성공한 계정으로
-기록됐다. 계정만 넣으면 로테이션/페일오버는 그대로 동작한다.
-
-**2. npm 배포** — `npm login` 필요. 패키지는 준비 완료(52.6 kB)이고,
-패킹한 tarball을 별도 프로젝트에 설치해 opus-5 호출까지 검증함.
-
-```bash
-npm login && npm publish --access public
-```
+없음. 다음 작업은 새 기능 요청이나 실사용 중 발견되는 회귀에서 시작한다.
 
 ---
 
