@@ -79,16 +79,31 @@ function model(id: string, name: string, contextWindow: number, input: ("text" |
 /**
  * Catalog of models Kiro may serve. Entries the account is not entitled to
  * simply fail upstream, so listing a model here is not a promise it is usable.
+ *
+ * Synchronized with `kiro-cli 2.15.2 chat --list-models`. Listing models is
+ * read-only; completion probing is deliberately not automatic because it
+ * consumes credits and eligibility can differ between pooled accounts.
  */
 export const KIRO_MODELS: KiroModel[] = [
+	model("auto", "Auto (Kiro)", 1_000_000),
 	model("claude-opus-5", "Claude Opus 5 (Kiro)", 1_000_000),
+	model("claude-sonnet-5", "Claude Sonnet 5 (Kiro)", 1_000_000),
+	model("claude-opus-4.8", "Claude Opus 4.8 (Kiro)", 1_000_000),
+	model("gpt-5.6-sol", "GPT-5.6 Sol (Kiro)", 272_000),
+	model("gpt-5.6-terra", "GPT-5.6 Terra (Kiro)", 272_000),
+	model("gpt-5.6-luna", "GPT-5.6 Luna (Kiro)", 272_000),
 	model("claude-opus-4.7", "Claude Opus 4.7 (Kiro)", 1_000_000),
 	model("claude-opus-4.6", "Claude Opus 4.6 (Kiro)", 1_000_000),
-	model("claude-opus-4.5", "Claude Opus 4.5 (Kiro)", 200_000),
 	model("claude-sonnet-4.6", "Claude Sonnet 4.6 (Kiro)", 1_000_000),
+	model("claude-opus-4.5", "Claude Opus 4.5 (Kiro)", 200_000),
 	model("claude-sonnet-4.5", "Claude Sonnet 4.5 (Kiro)", 200_000),
+	model("claude-sonnet-4", "Claude Sonnet 4 (Kiro)", 200_000),
 	model("claude-haiku-4.5", "Claude Haiku 4.5 (Kiro)", 200_000),
-	model("auto", "Auto (Kiro)", 1_000_000),
+	model("deepseek-3.2", "DeepSeek 3.2 (Kiro)", 164_000),
+	model("minimax-m2.5", "MiniMax M2.5 (Kiro)", 196_000),
+	model("minimax-m2.1", "MiniMax M2.1 (Kiro)", 196_000),
+	model("glm-5", "GLM-5 (Kiro)", 200_000),
+	model("qwen3-coder-next", "Qwen3 Coder Next (Kiro)", 256_000),
 ];
 
 /**
@@ -103,7 +118,8 @@ export function resolveModels(env: NodeJS.ProcessEnv = process.env): KiroModel[]
 	const ids = override
 		.split(",")
 		.map((id) => id.trim())
-		.filter(Boolean);
+		.filter(Boolean)
+		.filter((id, index, all) => all.indexOf(id) === index);
 	if (ids.length === 0) return KIRO_MODELS;
 
 	return ids.map((id) => {

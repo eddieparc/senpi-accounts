@@ -146,6 +146,26 @@ Then pick a model:
 /model kiro/claude-opus-5
 ```
 
+The built-in catalog follows Kiro CLI 2.15.2 and includes its Claude, GPT-5.6,
+DeepSeek, MiniMax, GLM and Qwen options. Availability still depends on the
+selected account. To replace the catalog without waiting for a package update:
+
+```bash
+export KIRO_MODELS_OVERRIDE=auto,claude-sonnet-5,gpt-5.6-sol
+```
+
+Automatic completion probing is intentionally disabled because probes consume
+credits and one pooled account's entitlement does not describe the whole pool.
+
+For redacted Kiro protocol and request-failure diagnostics:
+
+```bash
+export KIRO_DEBUG=1
+```
+
+The log is written to `$SENPI_CODING_AGENT_DIR/debug/debug.log`. Credentials and
+authorization values are redacted, and logging is off by default.
+
 ### Adding a second or third Kiro account
 
 Kiro federates Google sign-in through its own Cognito pool, and Google keeps a
