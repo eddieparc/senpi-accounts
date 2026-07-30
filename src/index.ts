@@ -43,6 +43,10 @@ async function loadProviderPackages(): Promise<{ packages: ProviderPackage[]; fa
 	const loaders: { id: string; load: () => Promise<ProviderPackage> }[] = [
 		{ id: "kiro", load: async () => (await import("./providers/kiro/index.js")).kiroProviderPackage() },
 		{ id: "codex-pool", load: async () => (await import("./providers/codex/index.js")).codexProviderPackage() },
+		{
+			id: "tokenrouter",
+			load: async () => (await import("./providers/tokenrouter/index.js")).tokenrouterProviderPackage(),
+		},
 	];
 
 	for (const loader of loaders) {
