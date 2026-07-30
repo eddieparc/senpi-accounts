@@ -3,3 +3,4 @@ dist/
 .omo/
 *.tsbuildinfo
 eddieparc-senpi-accounts-*.tgz
+.qa/
