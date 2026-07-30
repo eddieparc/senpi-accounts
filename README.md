@@ -86,14 +86,17 @@ Then either load it per-run:
 senpi -e /absolute/path/to/senpi-accounts
 ```
 
-or enable it for every session by adding the path to `extensions` in
+or enable it for every session by adding the built entry point to `extensions` in
 `~/.senpi/agent/settings.json`:
 
 ```json
 {
-  "extensions": ["/absolute/path/to/senpi-accounts"]
+  "extensions": ["/absolute/path/to/senpi-accounts/dist/index.js"]
 }
 ```
+
+Point at `dist/index.js`, not the repository root. senpi enumerates a bare
+directory and would load `dist/` and `src/` as two separate extensions.
 
 Verify it loaded:
 
