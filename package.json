@@ -4,6 +4,14 @@
   "description": "Senpi addon: multi-account subscription providers (Kiro) with cache-preserving routing, usage-aware placement and 429 failover.",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eddieparc/senpi-accounts.git"
+  },
+  "homepage": "https://github.com/eddieparc/senpi-accounts#readme",
+  "bugs": {
+    "url": "https://github.com/eddieparc/senpi-accounts/issues"
+  },
   "keywords": [
     "pi-package",
     "senpi",
