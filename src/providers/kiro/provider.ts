@@ -15,6 +15,7 @@ import {
 	resolveModels,
 } from "./config.js";
 import { fetchKiroUsage, type KiroTokens, refreshKiro } from "./oauth.js";
+import { DebugLogger } from "./vendor/debug-logger.js";
 import { createKiroStream } from "./vendor/kiro.js";
 
 /**
@@ -151,6 +152,7 @@ export interface KiroProviderDeps {
 	refresh?: (tokens: KiroTokens) => Promise<KiroTokens>;
 	createStream?: typeof createKiroStream;
 	onFailover?: (message: string) => void;
+	logger?: DebugLogger;
 	/** Per-account headroom source for `balanced` placement. */
 	usage?: UsageCache;
 }
@@ -240,7 +242,7 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 					const headers = { ...options?.headers };
 					if (tokens.profileArn) headers[PROFILE_ARN_HEADER] = tokens.profileArn;
 
-					const stream = makeStream(streamConfig(tokens.profileArn) as never, {}, silentLogger as never)(
+					const stream = makeStream(streamConfig(tokens.profileArn) as never, {}, deps.logger ?? (silentLogger as never))(
 						model,
 						context,
 						{ ...options, apiKey: tokens.access, headers } as SimpleStreamOptions,
@@ -277,6 +279,12 @@ export function buildKiroProviderConfig(
 		...model,
 		maxTokens: Math.min(model.maxTokens, KIRO_MAX_OUTPUT_TOKENS),
 	}));
+	const logger =
+		deps.logger ??
+		new DebugLogger({
+			extensionRoot: context.agentDir,
+			debug: /^(?:1|true|yes)$/i.test(context.env.KIRO_DEBUG?.trim() ?? ""),
+		});
 
 	return {
 		name: "Kiro",
@@ -287,7 +295,7 @@ export function buildKiroProviderConfig(
 		// dead-ends at an "Enter API key" prompt that can never succeed. Each
 		// request is authenticated by the pool in `streamSimple` instead.
 		models,
-		streamSimple: createKiroStreamSimple(context.agentDir, deps),
+		streamSimple: createKiroStreamSimple(context.agentDir, { ...deps, logger }),
 		...(oauth ? { oauth } : {}),
 	};
 }

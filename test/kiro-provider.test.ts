@@ -123,6 +123,30 @@ describe("Kiro provider streaming", () => {
 		expect(Object.values(persisted?.bindings ?? {})).not.toContain(blocked?.name);
 	});
 
+	it("passes an opt-in diagnostic logger to the vendored stream", async () => {
+		const logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
+		let receivedLogger: unknown;
+		const streamSimple = createKiroStreamSimple("/tmp/senpi-accounts-test", {
+			readPoolState: () => pool(),
+			writePoolState: vi.fn(),
+			usage: { get: () => undefined, refresh: async () => ({}) },
+			logger: logger as never,
+			createStream: ((_config: unknown, _runtime: unknown, candidate: unknown) => {
+				receivedLogger = candidate;
+				return () =>
+					(async function* () {
+						yield { type: "text_delta", delta: "ok" };
+					})() as unknown as AssistantMessageEventStream;
+			}) as never,
+		});
+		const iterator = (
+			streamSimple(model(), context()) as unknown as AsyncIterable<Record<string, unknown>>
+		)[Symbol.asyncIterator]();
+
+		await iterator.next();
+		expect(receivedLogger).toBe(logger);
+	});
+
 	it("retries before a delta without leaking failed-attempt events", async () => {
 		let attempts = 0;
 		const writePoolState = vi.fn();
