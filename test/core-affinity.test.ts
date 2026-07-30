@@ -151,6 +151,53 @@ describe("spread placement", () => {
 	});
 });
 
+describe("scheduling mode selection", () => {
+	function distribution(mode: "cache-first" | "balanced" | "spread", usage: Record<string, number>) {
+		let state = pool(["a", "b", "c"], { mode });
+		const counts: Record<string, number> = {};
+		let seed = 12_345;
+		const random = () => ((seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) / 2 ** 31);
+		for (let i = 0; i < 300; i++) {
+			const placement = placeRequest(state, { key: `conv-${i}`, usage, random });
+			state = placement.state;
+			counts[placement.account.name] = (counts[placement.account.name] ?? 0) + 1;
+		}
+		return counts;
+	}
+
+	// Three modes, three signatures over the same skewed headroom: `spread` is exactly
+	// even, `balanced` starves the most-used account, `cache-first` hashes across all
+	// three regardless of quota. Reading the pool's `mode` is what produces the
+	// difference, so a placement that ignored it would collapse these into one.
+	const usage = { a: 0.2, b: 0.6, c: 0.95 };
+
+	it("spreads perfectly evenly in spread mode", () => {
+		expect(distribution("spread", usage)).toEqual({ a: 100, b: 100, c: 100 });
+	});
+
+	it("skips the most-used account entirely in balanced mode", () => {
+		const counts = distribution("balanced", usage);
+		expect(counts.a).toBeUndefined();
+		expect(counts.c ?? 0).toBeGreaterThan(counts.b ?? 0);
+	});
+
+	it("uses every account irrespective of quota in cache-first mode", () => {
+		const counts = distribution("cache-first", usage);
+		expect(Object.keys(counts).sort()).toEqual(["a", "b", "c"]);
+	});
+
+	it("gives each mode a distinct distribution, so the switch is not a no-op", () => {
+		const signatures = (["cache-first", "balanced", "spread"] as const).map((mode) =>
+			JSON.stringify(
+				Object.entries(distribution(mode, usage))
+					.sort(([left], [right]) => left.localeCompare(right))
+					.map(([name, count]) => `${name}=${count}`),
+			),
+		);
+		expect(new Set(signatures).size).toBe(3);
+	});
+});
+
 describe("pinning and exhaustion", () => {
 	it("a pin overrides placement entirely", () => {
 		const state = pool(["a", "b", "c"], { pinned: "c" });
