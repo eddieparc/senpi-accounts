@@ -1,4 +1,5 @@
 import { mkdtempSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -6,6 +7,8 @@ import { emptyPool, readPool, writePool } from "../src/core/store.js";
 import { codexProviderPackage } from "../src/providers/codex/index.js";
 import { resolveCodexModels } from "../src/providers/codex/models.js";
 import { createCodexStreamSimple, slotToCodexTokens } from "../src/providers/codex/stream.js";
+
+const read = (rel: string) => readFile(new URL(`../${rel}`, import.meta.url), "utf8");
 
 const context = { env: {} as NodeJS.ProcessEnv, agentDir: "/tmp/codex-pool-test" };
 
@@ -303,5 +306,27 @@ describe("account menu logout", () => {
 		const state = await menu(seeded(), ["remove", "two"]);
 
 		expect((state.accounts ?? []).map((a) => (a as { name: string }).name)).toEqual(["one"]);
+	});
+});
+
+describe("pi-ai resolution", () => {
+	it("anchors on the running senpi process, not the addon's own tree", async () => {
+		// senpi is a *peer* dependency, so a clean `npm install` of this addon
+		// leaves no senpi (and no pi-ai) inside the addon's node_modules at all.
+		// Resolving only from the addon's tree therefore failed in a real tarball
+		// install even though it worked from the repo. process.argv[1] is the
+		// running senpi's entry point and is the authoritative anchor.
+		const source = await read("src/providers/codex/index.ts");
+
+		expect(source).toContain("process.argv[1]");
+		// The virtual-module specifier must stay first for the compiled Bun binary.
+		const specifierIndex = source.indexOf('"@earendil-works/pi-ai/api/openai-codex-responses"');
+		expect(specifierIndex).toBeGreaterThan(-1);
+	});
+
+	it("reports a single actionable error rather than every probed path", async () => {
+		const source = await read("src/providers/codex/index.ts");
+
+		expect(source).toContain("Ensure @code-yeongyu/senpi is installed alongside this addon");
 	});
 });

@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
@@ -49,21 +50,50 @@ export const CODEX_POOL_PROVIDER_ID = "codex-pool";
 async function loadStockCodexStreamSimple(): Promise<
 	(model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AsyncIterable<unknown>
 > {
-	// A package `exports` map blocks deep subpath imports, so the nested copies
-	// are resolved as file URLs instead of bare specifiers.
-	const RELATIVE = "node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js";
-	const roots = [
-		// Installed as a dependency of this addon.
-		join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "node_modules", "@code-yeongyu", "senpi"),
-		// senpi running from source: its own workspace copy.
-		...(process.env.SENPI_REPO_ROOT ? [join(process.env.SENPI_REPO_ROOT, "packages", "coding-agent")] : []),
-	];
+	// A package `exports` map blocks deep subpath imports, so pi-ai's file is
+	// located on disk and imported as a file URL. Node's own resolver is asked
+	// first, which handles hoisting, pnpm layouts and workspace links; walking
+	// fixed relative paths does not (verified by a clean tarball install, where
+	// senpi is hoisted beside the addon rather than nested inside it).
+	const SUBPATH = "@earendil-works/pi-ai/dist/api/openai-codex-responses.js";
+	const here = dirname(fileURLToPath(import.meta.url));
+	const candidates: string[] = [];
+
+	/** Ask Node to resolve the subpath from an anchor, then walk that anchor up. */
+	const probeFrom = (anchor: string): void => {
+		try {
+			candidates.push(pathToFileURL(createRequire(anchor).resolve(SUBPATH)).href);
+		} catch {
+			// Not resolvable from this anchor; the directory walk below still applies.
+		}
+		let dir = dirname(anchor);
+		for (let i = 0; i < 7; i++) {
+			candidates.push(pathToFileURL(join(dir, "node_modules", SUBPATH)).href);
+			dir = dirname(dir);
+		}
+	};
+
+	// The running senpi is the authoritative anchor: it owns the pi-ai build this
+	// addon must match, and because senpi is a *peer* dependency it normally lives
+	// outside the addon's own tree entirely (proved by a clean tarball install,
+	// where the addon's node_modules contains no senpi at all).
+	const senpiEntry = process.argv[1];
+	if (senpiEntry) probeFrom(senpiEntry);
+
+	// Installed as a real dependency or workspace link: resolve via senpi's root.
+	try {
+		probeFrom(createRequire(join(here, "index.js")).resolve("@code-yeongyu/senpi"));
+	} catch {
+		// Expected when senpi is only a peer dependency.
+	}
+
+	// Finally this module's own tree, covering a hoisted install.
+	probeFrom(join(here, "index.js"));
+
 	const specifiers = [
 		// Bun binary: senpi's injected virtual module.
 		"@earendil-works/pi-ai/api/openai-codex-responses",
-		...roots.map((root) => pathToFileURL(join(root, RELATIVE)).href),
-		// Hoisted install: pi-ai sits beside senpi rather than nested inside it.
-		...roots.map((root) => pathToFileURL(join(root, "..", "..", RELATIVE)).href),
+		...new Set(candidates),
 	];
 	const failures: string[] = [];
 	for (const specifier of specifiers) {
@@ -81,7 +111,13 @@ async function loadStockCodexStreamSimple(): Promise<
 			failures.push(`${specifier}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
-	throw new Error(`codex-pool: could not load stock's Codex stream (${failures.join("; ")})`);
+	// Only the first failure is quoted: listing every probed path produced a
+	// multi-line error that buried the actual cause.
+	throw new Error(
+		`codex-pool: could not load stock's Codex stream from @code-yeongyu/senpi ` +
+			`(tried ${specifiers.length} location(s); first error: ${failures[0] ?? "none"}). ` +
+			`Ensure @code-yeongyu/senpi is installed alongside this addon.`,
+	);
 }
 
 function stockCodexStream(
