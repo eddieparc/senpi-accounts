@@ -141,10 +141,15 @@ export async function buildUsageReport(
 	// quota entry in the failover state. Quota is strictly more informative, so it
 	// wins and the provider is listed once.
 	const planProviders = new Set(stockPlans.map((line) => line.provider));
+	// An addon provider is filtered out of the auth.json rows only once it has
+	// actually contributed per-account lines. A single-credential addon provider
+	// (tokenrouter) has no pool to enumerate, so filtering purely on ownership
+	// would hide the subscription from the one command that exists to show it.
+	const reportedIds = new Set(addon.map((line) => line.provider));
 	const lines = [
 		...addon,
 		// Stock pools the addon does not own (e.g. claude-agent-sdk).
-		...stockAccounts.filter((line) => !managedIds.has(line.provider) && !planProviders.has(line.provider)),
+		...stockAccounts.filter((line) => !reportedIds.has(line.provider) && !planProviders.has(line.provider)),
 		...stockPlans.filter((line) => !managedIds.has(line.provider)),
 	];
 

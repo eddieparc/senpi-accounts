@@ -78,4 +78,14 @@ describe("usage dashboard", () => {
 
 		expect(await buildUsageReport([], ctx(dir))).toContain("opencode-go");
 	});
+
+	it("lists an addon provider that has no account pool, rather than hiding it", async () => {
+		// A single-credential addon provider (tokenrouter) produces no per-account
+		// lines, so filtering its auth.json row out as "addon-managed" would drop the
+		// subscription from the dashboard entirely.
+		const dir = sandbox({ tokenrouter: { type: "api_key", key: "sk-x" } });
+		const poolless = { id: "tokenrouter", label: "TokenRouter", build: () => ({}) as never };
+
+		expect(await buildUsageReport([poolless], ctx(dir))).toContain("tokenrouter");
+	});
 });
