@@ -71,3 +71,34 @@ describe("failure classification", () => {
 		expect(classifyFailure(new Error("context length exceeded"))).toEqual({ failover: false });
 	});
 });
+
+describe("real upstream auth wordings", () => {
+	it("blocks on ChatGPT's unparseable-token message", () => {
+		// Observed live from chatgpt.com/backend-api with a corrupt token. Before
+		// this was recognised the slot was never blocked, so every later request
+		// retried the dead account first.
+		expect(classifyFailure(new Error("Could not parse your authentication token. Please try signing in again."))).toEqual(
+			{ block: "auth_error", failover: true },
+		);
+	});
+
+	it("blocks on parse/malformed/expired token phrasings", () => {
+		for (const message of [
+			"invalid token supplied",
+			"malformed token",
+			"failed to parse token",
+			"token is malformed",
+			"Please sign in again",
+		]) {
+			expect(classifyFailure(new Error(message))).toEqual({ block: "auth_error", failover: true });
+		}
+	});
+
+	it("still does not fail over on unrelated errors", () => {
+		// The broadened patterns must not swallow ordinary failures, which would
+		// block healthy accounts.
+		for (const message of ["context length exceeded", "connection reset by peer", "tool execution failed"]) {
+			expect(classifyFailure(new Error(message))).toEqual({ failover: false });
+		}
+	});
+});

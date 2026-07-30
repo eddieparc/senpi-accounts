@@ -87,7 +87,19 @@ export function classifyFailure(error: unknown): FailureClassification {
 			: { block: "quota", failover: true, retryAfterMs: retryAfter };
 	}
 
-	if (status === 401 || status === 403 || /unauthorized|forbidden|invalid[_ -]?grant|token (?:expired|rejected|invalid)|auth[_ -]?(?:expired|rejected)/.test(text)) {
+	// The token phrasings are deliberately broad: upstreams word this very
+	// differently and an unrecognised auth failure is the worst case, because the
+	// account is never blocked and every later request retries it first. Observed
+	// live from chatgpt.com: "Could not parse your authentication token."
+	if (
+		status === 401 ||
+		status === 403 ||
+		/unauthorized|forbidden|invalid[_ -]?grant|auth[_ -]?(?:expired|rejected)/.test(text) ||
+		/token (?:expired|rejected|invalid|is invalid)/.test(text) ||
+		/(?:invalid|malformed|expired|could not parse|failed to parse|unable to parse)[^.]{0,40}\btoken\b/.test(text) ||
+		/\btoken\b[^.]{0,40}(?:could not be parsed|is malformed|not valid)/.test(text) ||
+		/(?:sign|log)[ -]?in again/.test(text)
+	) {
 		return { block: "auth_error", failover: true };
 	}
 

@@ -61,10 +61,44 @@ function firstUserText(context: Context): string {
 	return "";
 }
 
+/**
+ * Buffer a stream, converting a terminal error *event* into a thrown error.
+ *
+ * Stock's `openai-codex-responses` implementation does not throw on an upstream
+ * failure: it pushes `{ type: "error", error: { errorMessage } }` and ends the
+ * stream normally. Collecting that as an ordinary event meant `runWithFailover`
+ * saw a successful attempt, so a dead account was never blocked and never
+ * rotated away from -- the request just failed. Observed live against
+ * chatgpt.com with a corrupt token.
+ *
+ * Buffering (rather than forwarding events as they arrive) is what makes the
+ * retry safe: nothing is emitted to the caller until the attempt has succeeded,
+ * so a failover cannot replay half a turn.
+ */
 async function collectStream(stream: AssistantMessageEventStream): Promise<unknown[]> {
 	const events: unknown[] = [];
-	for await (const event of stream as AsyncIterable<unknown>) events.push(event);
+	for await (const event of stream as AsyncIterable<unknown>) {
+		const candidate = event as { type?: string; error?: unknown; reason?: string };
+		if (candidate.type === "error" && candidate.reason !== "aborted") {
+			throw streamError(candidate.error);
+		}
+		events.push(event);
+	}
 	return events;
+}
+
+/** Rebuild a throwable error from a stream error event, preserving any status. */
+function streamError(payload: unknown): Error {
+	const detail = payload as { errorMessage?: unknown; status?: unknown; statusCode?: unknown } | undefined;
+	const message =
+		typeof detail?.errorMessage === "string" && detail.errorMessage.trim()
+			? detail.errorMessage
+			: "codex-pool: provider stream failed";
+	const error = new Error(message) as Error & { status?: number };
+	// classifyFailure() prefers an explicit status over message keywords.
+	const status = typeof detail?.status === "number" ? detail.status : detail?.statusCode;
+	if (typeof status === "number") error.status = status;
+	return error;
 }
 
 export interface CodexStreamDeps {

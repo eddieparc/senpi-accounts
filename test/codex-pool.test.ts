@@ -195,3 +195,62 @@ describe("codex-pool request routing", () => {
 		expect(usage).toBeDefined();
 	});
 });
+
+describe("terminal error events", () => {
+	it("treats a pushed error event as a failed attempt and rotates", async () => {
+		// Stock's Codex stream does not throw on upstream failure: it pushes
+		// { type: "error", ... } and ends normally. Collecting that as an ordinary
+		// event made failover see a success, so a dead account was never blocked
+		// and the request just failed. Observed live against chatgpt.com.
+		const used: string[] = [];
+		let first = true;
+		const stream = createCodexStreamSimple("/tmp/x", {
+			readPoolState: () => poolWith("alpha", "bravo"),
+			writePoolState: () => {},
+			createStream: ((_m: never, _c: never, options: never) => {
+				used.push((options as { apiKey: string }).apiKey);
+				const shouldFail = first;
+				first = false;
+				return (async function* () {
+					if (shouldFail) {
+						yield {
+							type: "error",
+							reason: "error",
+							error: { errorMessage: "Could not parse your authentication token.", status: 401 },
+						};
+						return;
+					}
+					yield { type: "text_delta", delta: "ok" };
+				})();
+			}) as never,
+		});
+
+		const seen: unknown[] = [];
+		for await (const event of stream({} as never, streamContext) as AsyncIterable<unknown>) seen.push(event);
+
+		expect(used).toHaveLength(2);
+		// The failed attempt must not leak its error event to the caller.
+		expect(seen).toEqual([{ type: "text_delta", delta: "ok" }]);
+	});
+
+	it("does not treat an aborted stream as a rotatable failure", async () => {
+		// A user abort must not burn through every account in the pool.
+		const used: string[] = [];
+		const stream = createCodexStreamSimple("/tmp/x", {
+			readPoolState: () => poolWith("alpha", "bravo"),
+			writePoolState: () => {},
+			createStream: ((_m: never, _c: never, options: never) => {
+				used.push((options as { apiKey: string }).apiKey);
+				return (async function* () {
+					yield { type: "error", reason: "aborted", error: { errorMessage: "Operation aborted" } };
+				})();
+			}) as never,
+		});
+
+		for await (const _ of stream({} as never, streamContext) as AsyncIterable<unknown>) {
+			// drain
+		}
+
+		expect(used).toHaveLength(1);
+	});
+});
