@@ -35,13 +35,29 @@ function stockAccountLines(agentDir: string): ProviderUsageLine[] {
 	const lines: ProviderUsageLine[] = [];
 	for (const [provider, raw] of Object.entries(data)) {
 		if (typeof raw !== "object" || raw === null) continue;
-		const credential = raw as { accounts?: { name: string; blockedUntil?: number; blockReason?: string }[] };
+		const credential = raw as {
+			type?: string;
+			accounts?: { name: string; blockedUntil?: number; blockReason?: string }[];
+		};
 		const accounts = credential.accounts;
-		if (!Array.isArray(accounts) || accounts.length === 0) continue;
-
-		const now = Date.now();
-		const available = accounts.filter((slot) => !isBlocked(slot as never, now)).length;
-		lines.push({ provider, detail: `${available}/${accounts.length} accounts available` });
+		if (Array.isArray(accounts) && accounts.length > 0) {
+			const now = Date.now();
+			const available = accounts.filter((slot) => !isBlocked(slot as never, now)).length;
+			lines.push({ provider, detail: `${available}/${accounts.length} accounts available` });
+			continue;
+		}
+		// API-key and single-credential OAuth subscriptions (alibaba-token-plan,
+		// opencode-go, a lone anthropic login) have no `accounts` array. Skipping
+		// them made configured subscriptions invisible to the dashboard, which is
+		// exactly what it exists to answer, so report them as configured. Remaining
+		// quota is added by stockPlanUsageLines() for providers that publish it.
+		if (credential.type === "api_key" || credential.type === "api") {
+			lines.push({ provider, detail: "configured (API key; no quota endpoint)" });
+			continue;
+		}
+		if (credential.type === "oauth") {
+			lines.push({ provider, detail: "configured (1 account)" });
+		}
 	}
 	return lines;
 }
@@ -121,10 +137,14 @@ export async function buildUsageReport(
 	];
 
 	const managedIds = new Set(packages.map((entry) => entry.id));
+	// A provider can appear in both stock sources: a credential in auth.json and a
+	// quota entry in the failover state. Quota is strictly more informative, so it
+	// wins and the provider is listed once.
+	const planProviders = new Set(stockPlans.map((line) => line.provider));
 	const lines = [
 		...addon,
 		// Stock pools the addon does not own (e.g. claude-agent-sdk).
-		...stockAccounts.filter((line) => !managedIds.has(line.provider)),
+		...stockAccounts.filter((line) => !managedIds.has(line.provider) && !planProviders.has(line.provider)),
 		...stockPlans.filter((line) => !managedIds.has(line.provider)),
 	];
 
