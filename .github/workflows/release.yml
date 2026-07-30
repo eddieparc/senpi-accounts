@@ -27,7 +27,10 @@ jobs:
           node --version
           npm --version
 
-      - run: npm ci
+      # `npm ci` is unusable here: @code-yeongyu/senpi bundles dependencies that
+      # npm install and npm ci disagree about, so a freshly generated lockfile
+      # still fails the ci sync check.
+      - run: npm install
 
       - name: Publish with OIDC trusted publishing
         run: npm publish
