@@ -65,9 +65,15 @@ Both were reported upstream rather than worked around here:
 
 ## Install
 
-Requires senpi `>= 2026.7.28` (verified against `2026.7.29-6`).
+Requires senpi `>= 2026.7.28` (verified against `2026.7.30`).
 
-**One command** — the recommended path, verified end to end from a clean sandbox:
+**One command** — from the npm registry:
+
+```bash
+npm install @eddieparc/senpi-accounts
+```
+
+The git route works too and compiles on install:
 
 ```bash
 npm install github:eddieparc/senpi-accounts
@@ -81,10 +87,10 @@ senpi -e ./node_modules/@eddieparc/senpi-accounts
 ```
 
 Or use the tarball attached to the
-[v0.1.0 release](https://github.com/eddieparc/senpi-accounts/releases/tag/v0.1.0):
+[v0.2.0 release](https://github.com/eddieparc/senpi-accounts/releases/tag/v0.2.0):
 
 ```text
-npm install ./eddieparc-senpi-accounts-0.1.0.tgz
+npm install ./eddieparc-senpi-accounts-0.2.0.tgz
 ```
 
 **From source** — the path this repo is developed against:
@@ -421,20 +427,18 @@ write.
 
 ## Publishing
 
-The shipped install route is the GitHub one at the top of this file: `npm install
-github:eddieparc/senpi-accounts` against the
-[v0.1.0 tag](https://github.com/eddieparc/senpi-accounts/releases/tag/v0.1.0), verified
-end to end from a clean sandbox down to a live `claude-opus-5` call.
-
-The npm registry copy is **not published**: the token in `~/.npmrc` is expired
-(`npm whoami` → `E401`) and GitHub Packages rejects it for lacking `write:packages`.
-`npm pack` and the `prepublishOnly` gate both pass, so publishing is one authenticated
-command away:
+Published to the npm registry as
+[`@eddieparc/senpi-accounts`](https://www.npmjs.com/package/@eddieparc/senpi-accounts).
+A scoped package defaults to restricted access, which answers `402 Payment Required` on a
+free account, so `publishConfig.access` is `public` in `package.json` and no flag is
+needed:
 
 ```
-npm login
-npm publish --access public
+npm publish
 ```
+
+`prepublishOnly` runs typecheck, the full suite and the build first, so an unverified
+tree cannot reach the registry.
 
 ## Development
 
