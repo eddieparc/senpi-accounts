@@ -212,7 +212,12 @@ with an API key, so they need nothing from this addon:
 /login opencode-go            # or set OPENCODE_API_KEY
 ```
 
-Both appear in `/usage` once configured.
+Both appear in `/usage` once configured. Verified state on the development machine:
+`opencode-go` is registered and listed in `/usage` (`configured (API key; no quota
+endpoint)`), but a live completion returns `401 CreditsError: Insufficient balance` — a
+billing state, not an addon fault. `alibaba-token-plan` is **not configured here**, so it
+is unverified end to end; stock already lists its models (`deepseek-v4-pro`, `glm-5.2`,
+`kimi-k2.7-code`, ...), and it needs only the key above.
 
 **Anthropic** multi-account is stock; use `/claude-account`. This addon does not
 touch it.
@@ -258,9 +263,10 @@ with a 2s ceiling per refresh, so routing never waits on a quota lookup, and an 
 access token is refreshed before probing (a stale token answers HTTP 403, which would
 otherwise read as "headroom unknown" and quietly drop that account from placement).
 
-Measured across three live Pro Max accounts at 74.5% / 92.9% / 100% headroom, 300 cold
-conversations in `balanced` mode placed 208 on the fullest account, 92 on the next, and
-**0** on the most-used one. When no provider reports a limit, placement degrades to an even
+Measured across three live Pro Max accounts, `balanced` mode places cold conversations by
+headroom and leaves the most-used account untouched; the per-mode figures are in
+[Scheduling modes](#scheduling-modes). When no provider reports a limit, placement
+degrades to an even
 spread rather than herding onto one account.
 
 ### Scheduling modes
@@ -270,6 +276,18 @@ spread rather than herding onto one account.
 | `cache-first` (default) | Hold one account per conversation. Maximises cache hits. |
 | `balanced` | Same, but new conversations go to the account with the most quota left. |
 | `spread` | Round-robin every request. Best load spread, ignores the cache. |
+
+Measured over the three live Pro Max accounts at 70.3% / 90.1% / 98.1% headroom, 300 cold
+conversations each:
+
+| Mode | Placement |
+|---|---|
+| `cache-first` | `jgplabs01` 111, `jgp3620` 98, `jgplabs` 91 — hashed, quota ignored |
+| `balanced` | `jgplabs01` 194, `jgplabs` 106, `jgp3620` **0** — most-used account starved |
+| `spread` | 100 / 100 / 100 — exactly even |
+
+The same conversation key placed twice returns the same account with `reusedBinding=true`,
+so affinity holds across turns.
 
 ### Interaction with senpi's own fallback
 
@@ -312,6 +330,29 @@ It is **off by default** because `auth.json` already matches stock's protection,
 is only used when `keychainAvailable()` proves a full write/read round-trip succeeds —
 presence of the `security` binary is not enough, since a locked or access-denied keychain
 would silently drop credentials.
+
+The probe asks `security default-keychain` before attempting anything. An isolated `HOME`
+(CI, a sandbox, the README doc-check) has no login keychain, and a write in that state
+makes macOS raise a modal "keychain could not be found" dialog that blocks the run until
+someone clicks it. Reporting unavailable is the correct answer there, and it costs no
+write.
+
+## Publishing
+
+The shipped install route is the GitHub one at the top of this file: `npm install
+github:eddieparc/senpi-accounts` against the
+[v0.1.0 tag](https://github.com/eddieparc/senpi-accounts/releases/tag/v0.1.0), verified
+end to end from a clean sandbox down to a live `claude-opus-5` call.
+
+The npm registry copy is **not published**: the token in `~/.npmrc` is expired
+(`npm whoami` → `E401`) and GitHub Packages rejects it for lacking `write:packages`.
+`npm pack` and the `prepublishOnly` gate both pass, so publishing is one authenticated
+command away:
+
+```
+npm login
+npm publish --access public
+```
 
 ## Development
 
