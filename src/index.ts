@@ -47,6 +47,10 @@ async function loadProviderPackages(): Promise<{ packages: ProviderPackage[]; fa
 			id: "tokenrouter",
 			load: async () => (await import("./providers/tokenrouter/index.js")).tokenrouterProviderPackage(),
 		},
+		{
+			id: "opengateway",
+			load: async () => (await import("./providers/opengateway/index.js")).opengatewayProviderPackage(),
+		},
 	];
 
 	for (const loader of loaders) {

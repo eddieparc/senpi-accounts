@@ -133,6 +133,7 @@ describe("extension entry", () => {
 		}
 
 		expect(pi.registered.has("kiro")).toBe(true);
+		expect(pi.registered.has("opengateway")).toBe(true);
 		const commands = pi.registerCommand.mock.calls.map((call) => call[0]);
 		expect(commands).toContain("usage");
 		expect(commands).toContain("senpi-accounts");
