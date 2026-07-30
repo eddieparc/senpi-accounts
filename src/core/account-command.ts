@@ -10,6 +10,7 @@ import {
 	unblockAccount,
 	unpinAccount,
 } from "./accounts.js";
+import type { SchedulingMode } from "./affinity.js";
 import { readPool, writePool } from "./store.js";
 
 /**
@@ -73,7 +74,10 @@ function listOutput(providerId: string, state: AccountPoolState, now: number): C
 }
 
 const USAGE =
-	"add <name> | remove <name> | pin <name> | unpin | strategy <fill-first|rotate> | unblock <name> | list";
+	"add <name> | remove <name> | logout [all] | pin <name> | unpin | " +
+	"mode <cache-first|balanced|spread> | strategy <fill-first|rotate> | unblock <name> | list";
+
+const SCHEDULING_MODES: SchedulingMode[] = ["cache-first", "balanced", "spread"];
 
 /**
  * Execute one account subcommand and return the message to show.
@@ -108,8 +112,54 @@ export async function runAccountCommand(deps: AccountCommandDeps, rawArgs: strin
 
 			case "remove": {
 				if (!target) return { text: `Usage: /${deps.providerId}-account remove <name>`, level: "error" };
+				if (!state.accounts.some((slot) => slot.name === target)) {
+					return { text: `Account '${target}' does not exist.`, level: "error" };
+				}
 				write(deps.agentDir, deps.providerId, removeAccount(state, target));
 				return { text: `Removed ${deps.providerId} account '${target}'.`, level: "info" };
+			}
+
+			// Logout is the credential-facing name for removal: `logout <name>` drops
+			// one account, `logout all` empties the pool (and with it the pin and
+			// conversation bindings, which would otherwise dangle).
+			case "logout": {
+				if (!target) {
+					return {
+						text: `Usage: /${deps.providerId}-account logout <name|all>`,
+						level: "error",
+					};
+				}
+				if (target === "all") {
+					const count = state.accounts.length;
+					if (count === 0) return { text: `No ${deps.providerId} accounts to log out.`, level: "info" };
+					const cleared = { ...state, accounts: [], bindings: {} };
+					delete (cleared as { pinned?: string }).pinned;
+					write(deps.agentDir, deps.providerId, cleared);
+					return {
+						text: `Logged out of all ${count} ${deps.providerId} account(s).`,
+						level: "info",
+					};
+				}
+				if (!state.accounts.some((slot) => slot.name === target)) {
+					return { text: `Account '${target}' does not exist.`, level: "error" };
+				}
+				write(deps.agentDir, deps.providerId, removeAccount(state, target));
+				return { text: `Logged out of ${deps.providerId} account '${target}'.`, level: "info" };
+			}
+
+			// Scheduling mode decides *where* a request lands: cache-first keeps a
+			// conversation on one account for prompt-cache hits, balanced evens out
+			// usage, spread avoids herding. `strategy` below is the older
+			// fill-first/rotate knob and is kept for compatibility.
+			case "mode": {
+				if (!target || !SCHEDULING_MODES.includes(target as SchedulingMode)) {
+					return {
+						text: `Usage: /${deps.providerId}-account mode <${SCHEDULING_MODES.join("|")}>`,
+						level: "error",
+					};
+				}
+				write(deps.agentDir, deps.providerId, { ...state, mode: target as SchedulingMode });
+				return { text: `${deps.providerId} scheduling mode set to ${target}.`, level: "info" };
 			}
 
 			case "pin": {
