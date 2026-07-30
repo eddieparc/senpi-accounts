@@ -38,9 +38,10 @@ export interface ProviderPackage {
 	readonly label: string;
 	/**
 	 * Whether this package should register. Returning a string skips
-	 * registration and reports that string as the reason.
+	 * registration and reports that string as the reason. The context is passed
+	 * so a package can also refuse on credential state, not just on env.
 	 */
-	enabled?(env: NodeJS.ProcessEnv): true | string;
+	enabled?(env: NodeJS.ProcessEnv, context?: ProviderBuildContext): true | string;
 	/** Build the senpi provider config. Throwing here degrades only this package. */
 	build(context: ProviderBuildContext): ProviderConfig | Promise<ProviderConfig>;
 	/**

@@ -48,7 +48,7 @@ export async function registerProviderPackages(
 	for (const providerPackage of packages) {
 		const { id } = providerPackage;
 		try {
-			const enabled = providerPackage.enabled?.(context.env) ?? true;
+			const enabled = providerPackage.enabled?.(context.env, context) ?? true;
 			if (enabled !== true) {
 				health.push({ status: "skipped", providerId: id, reason: enabled });
 				continue;
