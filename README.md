@@ -6,32 +6,99 @@ with cache-preserving routing, usage-aware placement and automatic 429 failover.
 Stock senpi is the base layer and is never modified. This addon sits on top of it and
 fills only the gaps stock leaves.
 
+> ### Purpose and scope
+>
+> **This is an open-source project published for learning and research purposes.** It
+> exists to explore how senpi's extension API composes providers, how prompt-cache
+> affinity interacts with account rotation, and how subscription rate limits surface
+> through a provider SDK.
+>
+> It automates nothing you could not do by hand: it signs in with **your own**
+> subscriptions, through each vendor's normal OAuth flow, and stores the resulting
+> tokens in senpi's own `auth.json`. It does not share, pool, resell or redistribute
+> accounts, and it does not bypass any vendor's authentication, billing or rate limits
+> — when a subscription is exhausted this addon simply reports it and stops using that
+> account until the vendor's own reset time.
+>
+> You are responsible for complying with the terms of service of every provider you
+> configure. Review them before using multiple accounts. Provided as-is, without
+> warranty, under the MIT licence.
+
 ## What this addon adds
 
-| Capability | Where it comes from |
-|---|---|
-| **Kiro** subscription provider (Google / GitHub / AWS Builder ID) | this addon |
-| Multi-account pool with pin, rotation, 429 failover and timed failback | this addon |
-| Cache-preserving conversation affinity + usage-aware placement | this addon |
-| **OpenAI Codex account pool** (opt-in, reuses stock's Codex API) | this addon |
-| `/usage` dashboard across every subscription | this addon |
-| Anthropic multi-account | **stock** (`/claude-account`) |
-| OpenAI Codex fast mode | **stock** (`service-tier`, `-fast` models) |
-| Alibaba Token Plan, OpenCode Go | **stock** (API-key providers) |
+| Capability | Status | Where it comes from |
+|---|---|---|
+| **Kiro** subscription provider (Google / GitHub / AWS Builder ID) | **shipped, live-verified** | this addon |
+| Multi-account pool with pin, rotation, 429 failover and timed failback | **shipped, live-verified** | this addon |
+| Cache-preserving conversation affinity + usage-aware placement | shipped | this addon |
+| Per-account and full logout; `cache-first` / `balanced` / `spread` modes | shipped | this addon |
+| `/usage` dashboard across every subscription | shipped | this addon |
+| **OpenAI Codex account pool** | experimental, opt-in | this addon |
+| Anthropic multi-account | stock | `/claude-account` |
+| Alibaba Token Plan, OpenCode Go | stock | API-key providers |
 
-Nothing above marked *stock* is reimplemented here; the addon only surfaces it in the
-usage dashboard.
+Nothing marked *stock* is reimplemented here; the addon only surfaces it in the usage
+dashboard.
+
+**Kiro is the supported provider in this release.** It is verified against the live API:
+four models (`claude-opus-5`, `claude-opus-4.7`, `claude-sonnet-4.6`, `claude-haiku-4.5`),
+two real accounts, per-account pinning, failover onto a second account when the first is
+rejected, automatic token refresh, and recovery after a cooldown expires.
+
+### Two stock bugs found while building this
+
+Both were reported upstream rather than worked around here:
+
+- [senpi#503](https://github.com/code-yeongyu/senpi/pull/503) — `/fast` can never succeed.
+  The command is registered only for `openai-codex`, but the catalog generator emits
+  `-fast` priority variants only for the direct `openai` provider. Measured against
+  `chatgpt.com`, `service_tier: "priority"` returns HTTP 200 and is then served at normal
+  tier, while senpi bills it at up to 2.5x — so synthesising the missing variants would be
+  a placebo that inflates reported cost. Fast mode is therefore **not** implemented here;
+  the PR corrects the misleading message instead.
+- [senpi#505](https://github.com/code-yeongyu/senpi/pull/505) — Claude multi-account never
+  rotates. Plan exhaustion arrives as prose ("You've hit your weekly limit") or as a bare
+  `error_during_execution` with the cause only in `terminal_reason`, and neither was
+  classified as a rate limit, so the exhausted account was never blocked.
 
 ## Install
+
+Requires senpi `>= 2026.7.28` (verified against `2026.7.29-6`).
+
+**From npm:**
 
 ```bash
 senpi install npm:@eddieparc/senpi-accounts
 ```
 
-Or load a local checkout directly:
+**From source** — no npm account needed, and the path this repo is tested against:
 
 ```bash
-senpi -e /path/to/senpi-accounts
+git clone https://github.com/eddieparc/senpi-accounts.git
+cd senpi-accounts
+npm install
+npm run build
+```
+
+Then either load it per-run:
+
+```bash
+senpi -e /absolute/path/to/senpi-accounts
+```
+
+or enable it for every session by adding the path to `extensions` in
+`~/.senpi/agent/settings.json`:
+
+```json
+{
+  "extensions": ["/absolute/path/to/senpi-accounts"]
+}
+```
+
+Verify it loaded:
+
+```bash
+senpi -e /absolute/path/to/senpi-accounts --list-models | grep kiro
 ```
 
 ## Kiro setup
@@ -133,16 +200,24 @@ Both appear in `/usage` once configured.
 **Anthropic** multi-account is stock; use `/claude-account`. This addon does not
 touch it.
 
-**OpenAI Codex** works out of the box as stock `openai-codex`. If you want to pool
-several ChatGPT subscriptions, opt in:
+**OpenAI Codex** works out of the box as stock `openai-codex`, and that is the
+recommended path.
+
+Pooling several ChatGPT subscriptions is **experimental** in this release and opt-in:
 
 ```bash
 export SENPI_ACCOUNTS_CODEX_POOL=1
 ```
 
-That registers a `codex-pool` provider that reuses stock's Codex Responses API —
-so fast mode and service tiers keep working — while adding the same account pool,
-affinity and failover as Kiro. Manage it with `/login codex-pool`.
+That registers a `codex-pool` provider which delegates streaming to stock's Codex
+Responses implementation while adding the same account pool, affinity and failover as
+Kiro. Manage it with `/login codex-pool`.
+
+It is marked experimental because it has been verified with only **one** real account
+(rotation was proved using a deliberately invalid second slot, not two live
+subscriptions), and because it depends on resolving stock's Codex streamer at runtime —
+senpi is a peer dependency, so that resolution is anchored on the running senpi process.
+If it cannot be resolved the provider degrades on its own and Kiro is unaffected.
 
 ## How routing works
 
