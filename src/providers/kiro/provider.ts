@@ -3,6 +3,7 @@ import type { AccountSlot } from "../../core/accounts.js";
 import { conversationKey } from "../../core/affinity.js";
 import { runWithFailover } from "../../core/failover.js";
 import { readPool, writePool } from "../../core/store.js";
+import { createUsageCache, type UsageCache } from "../../core/usage-cache.js";
 import type { ProviderBuildContext, ProviderConfig } from "../../core/types.js";
 import {
 	KIRO_API,
@@ -13,7 +14,7 @@ import {
 	KIRO_UPSTREAM_URL,
 	resolveModels,
 } from "./config.js";
-import { type KiroTokens, refreshKiro } from "./oauth.js";
+import { fetchKiroUsage, type KiroTokens, refreshKiro } from "./oauth.js";
 import { createKiroStream } from "./vendor/kiro.js";
 
 /**
@@ -123,6 +124,27 @@ export interface KiroProviderDeps {
 	refresh?: (tokens: KiroTokens) => Promise<KiroTokens>;
 	createStream?: typeof createKiroStream;
 	onFailover?: (message: string) => void;
+	/** Per-account headroom source for `balanced` placement. */
+	usage?: UsageCache;
+}
+
+/** Live per-account headroom, 0..1, from Kiro's own usage-limits endpoint. */
+function kiroUsageCache(agentDir: string, readState: typeof readPool): UsageCache {
+	return createUsageCache(async () => {
+		const state = readState(agentDir, KIRO_PROVIDER_ID);
+		const entries = await Promise.all(
+			state.accounts.map(async (slot) => {
+				try {
+					const usage = await fetchKiroUsage(slotToTokens(slot));
+					const limit = usage.limitCount > 0 ? usage.limitCount : undefined;
+					return [slot.name, limit ? Math.max(0, 1 - usage.usedCount / limit) : undefined] as const;
+				} catch {
+					return [slot.name, undefined] as const;
+				}
+			}),
+		);
+		return Object.fromEntries(entries);
+	});
 }
 
 export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps = {}) {
@@ -130,6 +152,8 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 	const writeState = deps.writePoolState ?? writePool;
 	const refreshTokens = deps.refresh ?? refreshKiro;
 	const makeStream = deps.createStream ?? createKiroStream;
+	// One cache per provider instance, so the TTL is shared across requests.
+	const usageCache = deps.usage ?? kiroUsageCache(agentDir, readState);
 
 	return (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
 		// Read per request so a login or pin made elsewhere takes effect on the
@@ -141,6 +165,9 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 			const result = await runWithFailover({
 				state,
 				key,
+				// Only consulted for a cold conversation in `balanced` mode; a warm
+				// binding and `cache-first` both keep the conversation where it is.
+				...(usageCache.get() ? { usage: usageCache.get() } : {}),
 				refresh: async (account) => {
 					const refreshed = await refreshTokens(slotToTokens(account));
 					return tokensToSlot(account.name, refreshed, account.source);
