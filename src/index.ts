@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { EXTENSION_ID, registerProviderPackages } from "./core/registry.js";
-import { registerFastMode } from "./providers/fast/index.js";
 import type {
 	ExtensionCommandContext,
 	ProviderBuildContext,
@@ -20,9 +19,8 @@ export { EXTENSION_ID } from "./core/registry.js";
  * Stock senpi is the base layer and is never modified. This addon sits above it
  * and fills only the gaps stock leaves: Anthropic multi-account, Alibaba Token
  * Plan and OpenCode Go are working stock features and are deliberately not
- * reimplemented here. OpenAI Codex fast mode is stock's to fix too — see
- * `src/providers/fast/` for the measurements showing priority tier is a no-op
- * on a ChatGPT subscription (upstream issue #499, fixed by senpi#503).
+ * reimplemented here. OpenAI Codex fast mode is stock's own defect and was
+ * handed upstream as senpi#503 rather than worked around here.
  *
  * Every provider lives in its own package under `src/providers/` and is loaded
  * lazily inside a try/catch, so one broken provider degrades only itself.
@@ -69,11 +67,6 @@ async function loadProviderPackages(): Promise<{ packages: ProviderPackage[]; fa
 export default async function senpiAccounts(pi: SenpiExtensionAPI): Promise<void> {
 	const env = process.env;
 	const context: ProviderBuildContext = { env, agentDir: agentDir(env) };
-
-	// Deliberately a no-op: registering a `fast` command here would collide with
-	// stock's and break `/fast` outright. Called anyway so the decision is visible
-	// at the entry point instead of looking like an omission.
-	registerFastMode();
 
 	const { packages, failures } = await loadProviderPackages();
 	const { health } = await registerProviderPackages(pi, packages, context);

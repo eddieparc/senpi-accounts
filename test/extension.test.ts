@@ -137,6 +137,10 @@ describe("extension entry", () => {
 		const commands = pi.registerCommand.mock.calls.map((call) => call[0]);
 		expect(commands).toContain("usage");
 		expect(commands).toContain("senpi-accounts");
+		// Registering our own `fast` makes senpi disambiguate two same-named commands as
+		// `fast:1`/`fast:2`, and plain `/fast` then matches neither and is sent to the
+		// model as an ordinary prompt. Stock's command must stay the only one.
+		expect(commands).not.toContain("fast");
 	});
 });
 
