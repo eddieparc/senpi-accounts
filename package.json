@@ -26,6 +26,7 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "prepare": "[ -f tsconfig.build.json ] && npm run build || exit 0",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
   "peerDependencies": {
