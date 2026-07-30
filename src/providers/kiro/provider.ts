@@ -1,7 +1,7 @@
 import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { AccountSlot } from "../../core/accounts.js";
 import { conversationKey } from "../../core/affinity.js";
-import { runWithFailover } from "../../core/failover.js";
+import { applyAccountFailure, runWithFailover } from "../../core/failover.js";
 import { readPool, writePool } from "../../core/store.js";
 import { createUsageCache, type UsageCache } from "../../core/usage-cache.js";
 import type { ProviderBuildContext, ProviderConfig } from "../../core/types.js";
@@ -89,33 +89,60 @@ export function firstUserText(context: Context): string | undefined {
 	return undefined;
 }
 
-/**
- * Buffer a stream so a failure can still be retried on another account.
- *
- * Retrying is only safe while nothing has reached the user, so buffering stops
- * committing once the first visible delta arrives: past that point errors
- * propagate instead of silently re-running the turn on a second subscription.
- */
-async function collectStream(stream: AssistantMessageEventStream): Promise<unknown[]> {
-	const events: unknown[] = [];
-	let committed = false;
+type KiroStreamEvent = Record<string, unknown>;
 
-	for await (const event of stream as AsyncIterable<Record<string, unknown>>) {
-		events.push(event);
-		const type = typeof event.type === "string" ? event.type : "";
-		// Only a *delta* has actually produced output. A `_start`/`_end` pair with no
-		// delta in between showed the user nothing, so a retry cannot duplicate
-		// anything -- and treating it as committed made a transient upstream
-		// overload fail the request instead of rotating to a healthy account.
-		if (/^(?:text|thinking|toolcall)_delta$/.test(type)) committed = true;
-		if (type === "error") {
-			const raw = event.error as { errorMessage?: string } | undefined;
-			const error = new Error(raw?.errorMessage ?? "Kiro request failed");
-			if (committed) throw Object.assign(error, { committed: true });
-			throw error;
-		}
+interface PreparedKiroStream {
+	buffered: KiroStreamEvent[];
+	tail?: AsyncIterator<KiroStreamEvent>;
+}
+
+function streamError(event: KiroStreamEvent): Error | undefined {
+	if (event.type !== "error") return undefined;
+	const raw = event.error as { errorMessage?: string } | undefined;
+	return new Error(raw?.errorMessage ?? "Kiro request failed");
+}
+
+function isVisibleDelta(event: KiroStreamEvent): boolean {
+	const type = typeof event.type === "string" ? event.type : "";
+	return /^(?:text|thinking|toolcall)_delta$/.test(type);
+}
+
+/**
+ * Read only until output is committed.
+ *
+ * A failure before the first visible delta is safe to retry on another account.
+ * Once a delta arrives, return the still-open iterator so the caller can stream
+ * it live instead of waiting for the complete response.
+ */
+async function prepareStream(stream: AssistantMessageEventStream): Promise<PreparedKiroStream> {
+	const iterator = (stream as AsyncIterable<KiroStreamEvent>)[Symbol.asyncIterator]();
+	const buffered: KiroStreamEvent[] = [];
+
+	for (;;) {
+		const next = await iterator.next();
+		if (next.done) return { buffered };
+		const error = streamError(next.value);
+		if (error) throw error;
+		buffered.push(next.value);
+		if (isVisibleDelta(next.value)) return { buffered, tail: iterator };
 	}
-	return events;
+}
+
+async function* emitPreparedStream(prepared: PreparedKiroStream): AsyncGenerator<KiroStreamEvent> {
+	const tail = prepared.tail;
+	try {
+		for (const event of prepared.buffered) yield event;
+		if (!tail) return;
+		for (;;) {
+			const next = await tail.next();
+			if (next.done) return;
+			const error = streamError(next.value);
+			if (error) throw error;
+			yield next.value;
+		}
+	} finally {
+		await tail?.return?.();
+	}
 }
 
 export interface KiroProviderDeps {
@@ -207,6 +234,7 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 							(event.to ? `retrying on '${event.to.name}'` : "no account left to try"),
 					);
 				},
+				onStateChange: (next) => writeState(agentDir, KIRO_PROVIDER_ID, next),
 				attempt: async (account) => {
 					const tokens = slotToTokens(account);
 					const headers = { ...options?.headers };
@@ -217,12 +245,23 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 						context,
 						{ ...options, apiKey: tokens.access, headers } as SimpleStreamOptions,
 					);
-					return collectStream(stream);
+					return prepareStream(stream);
 				},
 			});
 
-			writeState(agentDir, KIRO_PROVIDER_ID, result.state);
-			for (const event of result.value) yield event;
+			try {
+				yield* emitPreparedStream(result.value);
+			} catch (error) {
+				const transition = applyAccountFailure(result.state, result.account, key, error);
+				if (transition.classification.failover && transition.classification.block !== undefined) {
+					writeState(agentDir, KIRO_PROVIDER_ID, transition.state);
+					deps.onFailover?.(
+						`kiro: account '${result.account.name}' failed (${transition.classification.block}: ` +
+							`${error instanceof Error ? error.message : String(error)}; output already streamed; not retrying)`,
+					);
+				}
+				throw error;
+			}
 		})();
 
 		return iterator as unknown as AssistantMessageEventStream;

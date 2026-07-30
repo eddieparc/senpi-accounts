@@ -7,7 +7,7 @@ import {
 	unblockAccount,
 } from "./accounts.js";
 import { placeRequest, releaseBinding, type SchedulingMode, type UsageSnapshot } from "./affinity.js";
-import { classifyFailure } from "./failure.js";
+import { classifyFailure, type FailureClassification } from "./failure.js";
 
 export interface FailoverEvent {
 	from: AccountSlot;
@@ -50,6 +50,7 @@ export interface RunWithFailoverOptions<T> {
 	usage?: UsageSnapshot;
 	maxAttempts?: number;
 	onFailover?: (event: FailoverEvent) => void;
+	onStateChange?: (state: AccountPoolState) => void;
 	now?: () => number;
 	refreshSkewMs?: number;
 	random?: () => number;
@@ -75,6 +76,30 @@ function place(state: AccountPoolState, options: RunWithFailoverOptions<unknown>
 	return placeRequest(state, placement);
 }
 
+export interface AccountFailureTransition {
+	state: AccountPoolState;
+	classification: FailureClassification;
+}
+
+export function applyAccountFailure(
+	state: AccountPoolState,
+	account: AccountSlot,
+	key: string,
+	error: unknown,
+	now: number = Date.now(),
+	attempt = 0,
+): AccountFailureTransition {
+	const classification = classifyFailure(error);
+	if (!classification.failover || classification.block === undefined) return { state, classification };
+
+	const blockOptions: Parameters<typeof blockAccount>[2] = { now, attempt };
+	if (classification.retryAfterMs !== undefined) blockOptions.retryAfterMs = classification.retryAfterMs;
+	return {
+		state: releaseBinding(replaceAccount(state, blockAccount(account, classification.block, blockOptions)), key),
+		classification,
+	};
+}
+
 /**
  * Run one request against the account pool.
  *
@@ -91,6 +116,10 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 	const limit = options.maxAttempts ?? Math.max(1, state.accounts.length);
 	const attemptsByAccount = new Map<string, number>();
 	let lastError: unknown;
+	const updateState = (next: AccountPoolState) => {
+		state = next;
+		options.onStateChange?.(state);
+	};
 
 	for (let attempt = 0; attempt < limit; attempt++) {
 		let placement: ReturnType<typeof placeRequest>;
@@ -104,16 +133,16 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 			throw error;
 		}
 
-		state = placement.state;
+		updateState(placement.state);
 		let account = placement.account;
 
 		if (options.refresh && account.expires <= now() + skew) {
 			try {
 				account = await options.refresh(account);
-				state = replaceAccount(state, unblockAccount(account));
+				updateState(replaceAccount(state, unblockAccount(account)));
 			} catch (error) {
 				lastError = error;
-				state = releaseBinding(replaceAccount(state, blockAccount(account, "auth_error")), options.key);
+				updateState(releaseBinding(replaceAccount(state, blockAccount(account, "auth_error")), options.key));
 				options.onFailover?.({ from: account, reason: `token refresh failed: ${errorText(error)}`, attempt });
 				continue;
 			}
@@ -124,15 +153,12 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 			return { value, account, state };
 		} catch (error) {
 			lastError = error;
-			const classification = classifyFailure(error);
-			if (!classification.failover || classification.block === undefined) throw error;
-
 			const priorAttempts = attemptsByAccount.get(account.name) ?? 0;
+			const transition = applyAccountFailure(state, account, options.key, error, now(), priorAttempts);
+			const { classification } = transition;
+			if (!classification.failover || classification.block === undefined) throw error;
 			attemptsByAccount.set(account.name, priorAttempts + 1);
-
-			const blockOptions: Parameters<typeof blockAccount>[2] = { now: now(), attempt: priorAttempts };
-			if (classification.retryAfterMs !== undefined) blockOptions.retryAfterMs = classification.retryAfterMs;
-			state = releaseBinding(replaceAccount(state, blockAccount(account, classification.block, blockOptions)), options.key);
+			updateState(transition.state);
 
 			// Providers tag a failure that arrived *after* visible output with
 			// `committed`. Replaying such a turn on another account would emit the
