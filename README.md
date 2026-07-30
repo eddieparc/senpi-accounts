@@ -34,6 +34,7 @@ fills only the gaps stock leaves.
 | Per-account and full logout; `cache-first` / `balanced` / `spread` modes | shipped | this addon |
 | `/usage` dashboard across every subscription | shipped | this addon |
 | **TokenRouter** provider (117 models behind one key) | **shipped, live-verified** | this addon |
+| **OpenGateway** provider (Kimi K3 Ultrafast) | shipped | this addon |
 | **OpenAI Codex account pool** | experimental, opt-in | this addon |
 | Anthropic multi-account | stock | `/claude-account` |
 | Alibaba Token Plan, OpenCode Go | stock | API-key providers |
@@ -286,6 +287,22 @@ before returning a normal `HTTP 200`. senpi bounds the wait to the first stream 
 ```
 
 Paid `moonshotai/kimi-k3` answers in 6-9s and needs no such setting.
+
+### OpenGateway
+
+OpenGateway is an OpenAI-compatible gateway that stock senpi does not know, so its
+models are unreachable no matter where the key is stored. Registering the provider id is
+what puts it in the `/login` list, and senpi's own API-key prompt then stores, replaces
+and drops the key:
+
+```
+/login opengateway            # or set OPENGATEWAY_API_KEY
+```
+
+The catalog ships `moonshotai/kimi-k3-ultrafast`. OpenGateway publishes neither token
+limits nor pricing, so the limits mirror Kimi K3 elsewhere in senpi and cost stays zero
+rather than inventing billing data. Like TokenRouter this is a single-credential
+provider: one metered account, so there is no pool to rotate.
 
 **OpenAI Codex** works out of the box as stock `openai-codex`, and that is the
 recommended path.
