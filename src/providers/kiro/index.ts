@@ -137,7 +137,8 @@ async function accountManager(agentDir: string, callbacks: LoginCallbacks): Prom
 		message: `Kiro accounts\n${describe(state, now)}`,
 		options: [
 			{ id: "add", label: "Add an account" },
-			{ id: "remove", label: "Remove an account" },
+			{ id: "remove", label: "Log out of one account" },
+			{ id: "logout-all", label: "Log out of every account" },
 			{ id: "pin", label: "Pin an account" },
 			{ id: "unpin", label: "Clear the pin" },
 			{ id: "unblock", label: "Clear a block" },
@@ -150,8 +151,24 @@ async function accountManager(agentDir: string, callbacks: LoginCallbacks): Prom
 			state = await addFlow(state, callbacks);
 			break;
 		case "remove": {
-			const target = await pickAccount(state, callbacks, "Remove which account?");
+			const target = await pickAccount(state, callbacks, "Log out of which account?");
 			if (target) state = removeAccount(state, target);
+			break;
+		}
+		// Full logout. The pin and conversation bindings are dropped with the
+		// accounts, or they would point at slots that no longer exist.
+		case "logout-all": {
+			const confirm = await callbacks.onSelect({
+				message: `Log out of all ${state.accounts.length} Kiro account(s)?`,
+				options: [
+					{ id: "no", label: "Cancel" },
+					{ id: "yes", label: "Log out of every account" },
+				],
+			});
+			if (confirm === "yes") {
+				state = { ...state, accounts: [], bindings: {} };
+				delete (state as { pinned?: string }).pinned;
+			}
 			break;
 		}
 		case "pin": {

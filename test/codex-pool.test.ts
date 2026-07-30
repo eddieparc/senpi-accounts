@@ -1,5 +1,8 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { emptyPool } from "../src/core/store.js";
+import { emptyPool, readPool, writePool } from "../src/core/store.js";
 import { codexProviderPackage } from "../src/providers/codex/index.js";
 import { resolveCodexModels } from "../src/providers/codex/models.js";
 import { createCodexStreamSimple, slotToCodexTokens } from "../src/providers/codex/stream.js";
@@ -252,5 +255,53 @@ describe("terminal error events", () => {
 		}
 
 		expect(used).toHaveLength(1);
+	});
+});
+
+describe("account menu logout", () => {
+	const menu = async (agentDir: string, answers: (string | undefined)[]) => {
+		const cfg = codexProviderPackage().build({ env: {} as NodeJS.ProcessEnv, agentDir }) as {
+			oauth: { login: (cb: unknown) => Promise<unknown> };
+		};
+		const queue = [...answers];
+		return (await cfg.oauth.login({ onSelect: async () => queue.shift() })) as {
+			accounts?: unknown[];
+			pinned?: string;
+			bindings?: Record<string, string>;
+		};
+	};
+
+	const seeded = () => {
+		const dir = mkdtempSync(join(tmpdir(), "codex-menu-"));
+		const pool = readPool(dir, "codex-pool");
+		pool.accounts = [slot("one"), slot("two")];
+		pool.pinned = "one";
+		pool.bindings = { "c-1": "one" };
+		writePool(dir, "codex-pool", pool);
+		return dir;
+	};
+
+	it("clears every account, the pin and the bindings on confirmation", async () => {
+		// Full logout is reachable only from this menu: runAccountCommand is not
+		// wired to any senpi command, so menu coverage is what actually matters.
+		const state = await menu(seeded(), ["logout-all", "yes"]);
+
+		expect(state.accounts ?? []).toHaveLength(0);
+		expect(state.pinned).toBeUndefined();
+		expect(state.bindings).toEqual({});
+	});
+
+	it("leaves the pool untouched when cancelled", async () => {
+		const state = await menu(seeded(), ["logout-all", "no"]);
+
+		expect(state.accounts ?? []).toHaveLength(2);
+		expect(state.pinned).toBe("one");
+		expect(state.bindings).toEqual({ "c-1": "one" });
+	});
+
+	it("logs out of a single account without touching the others", async () => {
+		const state = await menu(seeded(), ["remove", "two"]);
+
+		expect((state.accounts ?? []).map((a) => (a as { name: string }).name)).toEqual(["one"]);
 	});
 });

@@ -45,13 +45,15 @@ senpi -e /path/to/senpi-accounts
 | Action | What it does |
 |---|---|
 | Add an account | Google / GitHub / AWS Builder ID sign-in, then names the slot |
-| Remove an account | Deletes one account, leaving the rest intact |
+| Log out of one account | Deletes one account, leaving the rest intact |
+| Log out of every account | Empties the pool, clearing the pin and bindings too |
 | Pin / Clear the pin | Force every request onto one account |
 | Clear a block | Lift a rate-limit or auth block early |
-| Scheduling mode | `cache-first`, `balanced` or `spread` |
+| Scheduling mode | `cache-first` (default), `balanced` or `spread` |
 
-`/logout kiro` removes **all** Kiro accounts, matching stock `/logout` semantics.
-To drop a single account, use *Remove an account* inside `/login kiro`.
+Both logout paths live inside `/login kiro`, which is the account manager. Full
+logout asks for confirmation first, and clears the pin and conversation bindings
+along with the accounts so nothing points at a slot that no longer exists.
 
 Then pick a model:
 
@@ -186,8 +188,7 @@ as the pool is down instead of senpi's default 30-minute quota bucket.
 
 | Command | Purpose |
 |---|---|
-| `/login kiro` | Add, remove, pin or unpin accounts; set scheduling mode |
-| `/logout kiro` | Remove all Kiro accounts |
+| `/login kiro` | Account manager: add, log out (one or all), pin, unblock, set scheduling mode |
 | `/usage` | Remaining usage across addon and stock subscriptions |
 | `/senpi-accounts` | Provider health, including any degraded provider |
 
