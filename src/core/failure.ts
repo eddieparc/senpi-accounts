@@ -103,7 +103,15 @@ export function classifyFailure(error: unknown): FailureClassification {
 		return { block: "auth_error", failover: true };
 	}
 
-	if ((status !== undefined && status >= 500) || /overloaded|service unavailable|bad gateway|internal server error/.test(text)) {
+	// "high load" / "try again" are how Kiro's CodeWhisperer backend reports a
+	// transient overload: no HTTP status reaches us and none of the usual keywords
+	// appear, so without this the request failed outright instead of retrying on
+	// another account. Observed live on two of three accounts simultaneously.
+	if (
+		(status !== undefined && status >= 500) ||
+		/overloaded|service unavailable|bad gateway|internal server error/.test(text) ||
+		/high load|please try again|try again later|temporarily unavailable|capacity/.test(text)
+	) {
 		return retryAfter === undefined
 			? { block: "server_error", failover: true }
 			: { block: "server_error", failover: true, retryAfterMs: retryAfter };

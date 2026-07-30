@@ -102,3 +102,24 @@ describe("real upstream auth wordings", () => {
 		}
 	});
 });
+
+describe("transient upstream overload", () => {
+	it("fails over on Kiro's high-load message", () => {
+		// Kiro's CodeWhisperer backend reports overload as prose with no HTTP
+		// status. Unrecognised, it failed the request outright even though other
+		// accounts in the pool were healthy. Observed live.
+		expect(classifyFailure(new Error("Encountered unexpectedly high load when processing the request, please try again."))).toEqual(
+			{ block: "server_error", failover: true },
+		);
+	});
+
+	it("fails over on other transient phrasings", () => {
+		for (const message of ["service temporarily unavailable", "at capacity, try again later"]) {
+			expect(classifyFailure(new Error(message))).toMatchObject({ failover: true });
+		}
+	});
+
+	it("does not treat a plain validation error as transient", () => {
+		expect(classifyFailure(new Error("invalid request: missing field"))).toEqual({ failover: false });
+	});
+});

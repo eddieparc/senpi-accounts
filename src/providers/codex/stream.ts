@@ -82,7 +82,9 @@ async function collectStream(stream: AssistantMessageEventStream): Promise<unkno
 	for await (const event of stream as AsyncIterable<unknown>) {
 		const candidate = event as { type?: string; error?: unknown; reason?: string };
 		const type = typeof candidate.type === "string" ? candidate.type : "";
-		if (/^(?:text|thinking|toolcall)_(?:start|delta|end)$/.test(type)) committed = true;
+		// Only a *delta* has actually produced output; a `_start`/`_end` with no
+		// delta showed the user nothing, so retrying cannot duplicate anything.
+		if (/^(?:text|thinking|toolcall)_delta$/.test(type)) committed = true;
 		if (type === "error" && candidate.reason !== "aborted") {
 			const error = streamError(candidate.error);
 			// Once visible output has streamed, a retry would duplicate it, so the

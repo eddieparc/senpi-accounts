@@ -102,7 +102,11 @@ async function collectStream(stream: AssistantMessageEventStream): Promise<unkno
 	for await (const event of stream as AsyncIterable<Record<string, unknown>>) {
 		events.push(event);
 		const type = typeof event.type === "string" ? event.type : "";
-		if (/^(?:text|thinking|toolcall)_(?:start|delta|end)$/.test(type)) committed = true;
+		// Only a *delta* has actually produced output. A `_start`/`_end` pair with no
+		// delta in between showed the user nothing, so a retry cannot duplicate
+		// anything -- and treating it as committed made a transient upstream
+		// overload fail the request instead of rotating to a healthy account.
+		if (/^(?:text|thinking|toolcall)_delta$/.test(type)) committed = true;
 		if (type === "error") {
 			const raw = event.error as { errorMessage?: string } | undefined;
 			const error = new Error(raw?.errorMessage ?? "Kiro request failed");
@@ -183,7 +187,10 @@ export function buildKiroProviderConfig(
 		name: "Kiro",
 		baseUrl: KIRO_UPSTREAM_URL,
 		api: KIRO_API as Api,
-		apiKey: "kiro-managed",
+		// Deliberately no provider-level `apiKey`. Kiro is OAuth-only, and declaring
+		// one made senpi offer "Sign in with an API key" in `/login kiro`, which
+		// dead-ends at an "Enter API key" prompt that can never succeed. Each
+		// request is authenticated by the pool in `streamSimple` instead.
 		models,
 		streamSimple: createKiroStreamSimple(context.agentDir, deps),
 		...(oauth ? { oauth } : {}),
