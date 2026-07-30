@@ -2,10 +2,24 @@ import { afterAll, describe, expect, it } from "vitest";
 import { deleteSecret, isMacOS, keychainAvailable, readSecret, writeSecret } from "../src/core/keychain.js";
 
 const PROVIDER = `__senpi_accounts_test_${process.pid}`;
-const runOnMac = isMacOS() ? describe : describe.skip;
+// A login keychain only exists for a real user session. Under an isolated HOME (CI, a
+// sandbox, the README doc-check) `security` has nothing to write to, so the round-trip
+// suite is gated on the same probe production uses to decide whether to store anything.
+const usable = isMacOS() && keychainAvailable();
+const runOnMac = usable ? describe : describe.skip;
+
+it("reports availability without throwing, whatever the environment", () => {
+	expect(typeof keychainAvailable()).toBe("boolean");
+});
+
+it("reads as absent rather than throwing when the keychain is unusable", () => {
+	if (usable) return expect(readSecret(`${PROVIDER}_never_written`)).toBeUndefined();
+	expect(readSecret(PROVIDER)).toBeUndefined();
+	expect(deleteSecret(PROVIDER)).toBe(false);
+});
 
 afterAll(() => {
-	if (isMacOS()) deleteSecret(PROVIDER);
+	if (usable) deleteSecret(PROVIDER);
 });
 
 runOnMac("macOS keychain", () => {

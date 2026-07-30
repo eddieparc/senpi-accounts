@@ -28,9 +28,26 @@ export function isMacOS(): boolean {
 	return process.platform === "darwin";
 }
 
+/**
+ * Whether this process has a login keychain to write into.
+ *
+ * A user session has one; an isolated `HOME` (CI, a sandbox, the README doc-check) does
+ * not. Writing in that state makes macOS raise a modal "keychain could not be found"
+ * dialog that blocks the run until someone clicks it, so every entry point checks first.
+ */
+function defaultKeychainExists(): boolean {
+	try {
+		security(["default-keychain"]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** Write a secret, replacing any existing entry for the provider. */
 export function writeSecret(providerId: string, value: string): void {
 	if (!isMacOS()) throw new Error("Keychain storage is only available on macOS");
+	if (!defaultKeychainExists()) throw new Error("No default keychain to write into");
 	// `-U` updates in place; without it a second write fails as a duplicate.
 	security(["add-generic-password", "-a", process.env.USER ?? "senpi", "-s", service(providerId), "-w", value, "-U"]);
 }
@@ -63,7 +80,7 @@ export function deleteSecret(providerId: string): boolean {
  * or access denied, and either would silently drop credentials.
  */
 export function keychainAvailable(): boolean {
-	if (!isMacOS()) return false;
+	if (!isMacOS() || !defaultKeychainExists()) return false;
 	const probe = `__probe__${process.pid}`;
 	try {
 		writeSecret(probe, "ok");
