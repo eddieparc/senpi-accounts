@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AccountPoolState, AccountSlot } from "../src/core/accounts.js";
 import { rendezvousOrder } from "../src/core/affinity.js";
 import { AllAccountsBlockedError, type FailoverEvent, runWithFailover } from "../src/core/failover.js";
+import { emptyPool } from "../src/core/store.js";
 
 const KEY = "conversation-1";
 
@@ -222,5 +223,62 @@ describe("senpi cooldown alignment", () => {
 
 		expect(error).toBeInstanceOf(AllAccountsBlockedError);
 		expect((error as AllAccountsBlockedError).retryAfterMs).toBeUndefined();
+	});
+});
+
+describe("committed turns are not replayed", () => {
+	it("blocks the account but does not retry once output has streamed", async () => {
+		// Both providers tag a post-output failure with `committed`. Retrying it on
+		// another account would emit the partial text twice.
+		const state = {
+			...emptyPool(),
+			accounts: [
+				{ name: "alpha", access: "a", refresh: "r", expires: Date.now() + 3.6e6, source: "login" as const, meta: {} },
+				{ name: "bravo", access: "b", refresh: "r", expires: Date.now() + 3.6e6, source: "login" as const, meta: {} },
+			],
+		};
+		const attempted: string[] = [];
+
+		await expect(
+			runWithFailover({
+				state: state as never,
+				key: "c-committed",
+				attempt: async (account) => {
+					attempted.push(account.name);
+					throw Object.assign(new Error("429 rate limit"), { committed: true });
+				},
+			}),
+		).rejects.toThrow(/rate limit/);
+
+		// Exactly one attempt: no replay onto the second account.
+		expect(attempted).toHaveLength(1);
+	});
+
+	it("still retries when nothing had streamed yet", async () => {
+		const state = {
+			...emptyPool(),
+			accounts: [
+				{ name: "alpha", access: "a", refresh: "r", expires: Date.now() + 3.6e6, source: "login" as const, meta: {} },
+				{ name: "bravo", access: "b", refresh: "r", expires: Date.now() + 3.6e6, source: "login" as const, meta: {} },
+			],
+		};
+		const attempted: string[] = [];
+		let first = true;
+
+		const result = await runWithFailover({
+			state: state as never,
+			key: "c-uncommitted",
+			attempt: async (account) => {
+				attempted.push(account.name);
+				if (first) {
+					first = false;
+					throw new Error("429 rate limit");
+				}
+				return "ok";
+			},
+		});
+
+		expect(result.value).toBe("ok");
+		expect(attempted).toHaveLength(2);
 	});
 });

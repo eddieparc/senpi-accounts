@@ -134,6 +134,19 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 			if (classification.retryAfterMs !== undefined) blockOptions.retryAfterMs = classification.retryAfterMs;
 			state = releaseBinding(replaceAccount(state, blockAccount(account, classification.block, blockOptions)), options.key);
 
+			// Providers tag a failure that arrived *after* visible output with
+			// `committed`. Replaying such a turn on another account would emit the
+			// partial text twice, so the account is still blocked (so later requests
+			// route elsewhere) but this request fails rather than being retried.
+			if ((error as { committed?: boolean }).committed) {
+				options.onFailover?.({
+					from: account,
+					reason: `${classification.block}: ${errorText(error)} (output already streamed; not retrying)`,
+					attempt,
+				});
+				throw error;
+			}
+
 			let next: AccountSlot | undefined;
 			try {
 				next = place(state, options as RunWithFailoverOptions<unknown>, now()).account;

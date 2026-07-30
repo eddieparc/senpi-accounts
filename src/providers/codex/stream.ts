@@ -77,10 +77,19 @@ function firstUserText(context: Context): string {
  */
 async function collectStream(stream: AssistantMessageEventStream): Promise<unknown[]> {
 	const events: unknown[] = [];
+	let committed = false;
+
 	for await (const event of stream as AsyncIterable<unknown>) {
 		const candidate = event as { type?: string; error?: unknown; reason?: string };
-		if (candidate.type === "error" && candidate.reason !== "aborted") {
-			throw streamError(candidate.error);
+		const type = typeof candidate.type === "string" ? candidate.type : "";
+		if (/^(?:text|thinking|toolcall)_(?:start|delta|end)$/.test(type)) committed = true;
+		if (type === "error" && candidate.reason !== "aborted") {
+			const error = streamError(candidate.error);
+			// Once visible output has streamed, a retry would duplicate it, so the
+			// account is still blocked but the turn is not replayed. Mirrors the Kiro
+			// package's contract.
+			if (committed) throw Object.assign(error, { committed: true });
+			throw error;
 		}
 		events.push(event);
 	}
