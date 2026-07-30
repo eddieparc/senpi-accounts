@@ -172,8 +172,55 @@ function parseToolInput(value: unknown): Record<string, unknown> {
   }
 }
 
+function mergeConstSchemas(left: unknown, right: unknown): unknown {
+  if (!isRecord(left) || !isRecord(right) || !("const" in left) || !("const" in right)) return left;
+  const { const: leftConst, enum: leftEnum, ...metadata } = left;
+  const rightValues = Array.isArray(right.enum) ? right.enum : [right.const];
+  const values = [...(Array.isArray(leftEnum) ? leftEnum : [leftConst]), ...rightValues];
+  return { ...metadata, enum: [...new Set(values)] };
+}
+
+function flattenObjectUnion(schema: JsonRecord, keyword: "anyOf" | "oneOf"): JsonRecord | undefined {
+  const rawVariants = schema[keyword];
+  if (!Array.isArray(rawVariants) || rawVariants.length === 0) return undefined;
+  if (!rawVariants.every((variant) => isRecord(variant) && variant.type === "object")) return undefined;
+
+  const variants = rawVariants as JsonRecord[];
+  const properties: JsonRecord = {};
+  for (const variant of variants) {
+    const variantProperties = isRecord(variant.properties) ? variant.properties : {};
+    for (const [name, propertySchema] of Object.entries(variantProperties)) {
+      properties[name] = name in properties ? mergeConstSchemas(properties[name], propertySchema) : propertySchema;
+    }
+  }
+
+  const requiredLists = variants.map((variant) =>
+    Array.isArray(variant.required) ? variant.required.filter((name): name is string => typeof name === "string") : [],
+  );
+  const required = requiredLists[0]?.filter((name) => requiredLists.every((list) => list.includes(name))) ?? [];
+  const { anyOf: _anyOf, oneOf: _oneOf, properties: _properties, required: _required, ...metadata } = schema;
+  return {
+    ...metadata,
+    type: "object",
+    properties,
+    ...(required.length > 0 ? { required } : {}),
+  };
+}
+
+export function sanitizeKiroToolSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(sanitizeKiroToolSchema);
+  if (!isRecord(schema)) return schema;
+
+  const sanitized = Object.fromEntries(
+    Object.entries(schema)
+      .filter(([key, value]) => key !== "additionalProperties" && !(key === "required" && Array.isArray(value) && value.length === 0))
+      .map(([key, value]) => [key, sanitizeKiroToolSchema(value)]),
+  );
+  return flattenObjectUnion(sanitized, "anyOf") ?? flattenObjectUnion(sanitized, "oneOf") ?? sanitized;
+}
+
 function toolSchemaForRequest(tool: Tool): unknown {
-  return tool.parameters ?? { type: "object", properties: {} };
+  return sanitizeKiroToolSchema(tool.parameters ?? { type: "object", properties: {} });
 }
 
 function descriptionIncludesAll(description: string, terms: string[]): boolean {
