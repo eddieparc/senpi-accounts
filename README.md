@@ -33,6 +33,7 @@ fills only the gaps stock leaves.
 | Cache-preserving conversation affinity + usage-aware placement | shipped | this addon |
 | Per-account and full logout; `cache-first` / `balanced` / `spread` modes | shipped | this addon |
 | `/usage` dashboard across every subscription | shipped | this addon |
+| **TokenRouter** provider (117 models behind one key) | **shipped, live-verified** | this addon |
 | **OpenAI Codex account pool** | experimental, opt-in | this addon |
 | Anthropic multi-account | stock | `/claude-account` |
 | Alibaba Token Plan, OpenCode Go | stock | API-key providers |
@@ -221,6 +222,50 @@ is unverified end to end; stock already lists its models (`deepseek-v4-pro`, `gl
 
 **Anthropic** multi-account is stock; use `/claude-account`. This addon does not
 touch it.
+
+### TokenRouter
+
+TokenRouter fronts ~117 models behind one OpenAI-compatible endpoint, and stock senpi
+has no `tokenrouter` provider — so the models are unreachable however the key is stored.
+This addon registers the provider id, which is what puts TokenRouter in the `/login`
+list:
+
+```
+/login tokenrouter            # or set TOKENROUTER_API_KEY
+```
+
+Issue the key at [tokenrouter.com](https://www.tokenrouter.com) under Console -> API
+Keys. There is no account pool: TokenRouter meters one account, so rotating keys would
+buy nothing, and this is a single-credential provider like stock's `opencode-go`.
+
+The catalog ships `moonshotai/kimi-k3`, `moonshotai/kimi-k3-free`,
+`deepseek/deepseek-v4-pro`, `qwen/qwen3.7-max` and `z-ai/glm-5.2`;
+`TOKENROUTER_MODELS_OVERRIDE=<comma-separated ids>` adds any other id the router serves.
+A catalog is mandatory rather than cosmetic — an extension-registered provider inherits
+no models, and without one `--provider tokenrouter` fails as `Unknown provider`.
+
+Two measured quirks are encoded in the catalog's `compat` profile rather than left for a
+user to hit:
+
+| Request senpi sends by default | TokenRouter's answer |
+|---|---|
+| `role: "developer"` | `HTTP 400 role 'developer' is not allowed` |
+| `store: false` | `HTTP 200` with a whitespace body and no completion |
+
+Both made a turn fail as `422 openai_error` while a plain `curl` succeeded, so every
+model declares `supportsDeveloperRole: false` and `supportsStore: false`.
+
+**`kimi-k3-free` is slow, not broken.** The free tier queued for 395s on a cold call
+before returning a normal `HTTP 200`. senpi bounds the wait to the first stream event at
+90s by default, so a free-tier turn needs that raised:
+
+```json
+{
+  "retry": { "provider": { "streamStartTimeoutMs": 600000, "streamIdleTimeoutMs": 600000 } }
+}
+```
+
+Paid `moonshotai/kimi-k3` answers in 6-9s and needs no such setting.
 
 **OpenAI Codex** works out of the box as stock `openai-codex`, and that is the
 recommended path.
