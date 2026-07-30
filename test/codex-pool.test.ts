@@ -1,0 +1,197 @@
+import { describe, expect, it, vi } from "vitest";
+import { emptyPool } from "../src/core/store.js";
+import { codexProviderPackage } from "../src/providers/codex/index.js";
+import { resolveCodexModels } from "../src/providers/codex/models.js";
+import { createCodexStreamSimple, slotToCodexTokens } from "../src/providers/codex/stream.js";
+
+const context = { env: {} as NodeJS.ProcessEnv, agentDir: "/tmp/codex-pool-test" };
+
+const slot = (name: string, extra: Record<string, unknown> = {}) => ({
+	name,
+	access: `access-${name}`,
+	refresh: `refresh-${name}`,
+	expires: Date.now() + 3_600_000,
+	source: "login" as const,
+	meta: { accountId: `acct-${name}`, email: `${name}@example.com` },
+	...extra,
+});
+
+/**
+ * `readPool` returns an `AccountPoolState` (accounts required), while
+ * `emptyPool()` is a `StoredPool` (accounts optional), so the stub builds the
+ * state shape the stream layer actually receives.
+ */
+const poolWith = (...names: string[]) => ({
+	...emptyPool(),
+	accounts: names.map((name) => slot(name)),
+});
+
+/** Minimal stream stub: yields one event, or throws to force failover. */
+const streamStub = (onCall: (options: unknown) => void, fail?: string) =>
+	((_model: never, _ctx: never, options: never) => {
+		onCall(options);
+		return (async function* () {
+			if (fail) throw new Error(fail);
+			yield { type: "text_delta", delta: "ok" };
+		})();
+	}) as never;
+
+const streamContext = { messages: [{ role: "user", content: "hello" }] } as never;
+
+describe("codex-pool provider registration", () => {
+	it("registers a non-empty model catalog", () => {
+		// An extension-registered provider id inherits no built-in catalog, so
+		// omitting `models` registers zero models and `--provider codex-pool`
+		// fails with "Unknown provider". Verified live before this was fixed.
+		const config = codexProviderPackage().build(context) as { models?: unknown[] };
+		expect(config.models?.length ?? 0).toBeGreaterThan(0);
+	});
+
+	it("routes requests through streamSimple rather than a fixed provider key", () => {
+		// getApiKey() resolves once from the stored credential, so a pool could
+		// never rotate through it; routing must be per request.
+		const config = codexProviderPackage().build(context) as { streamSimple?: unknown };
+		expect(typeof config.streamSimple).toBe("function");
+	});
+
+	it("stays opt-in so stock openai-codex remains the default", () => {
+		const pkg = codexProviderPackage();
+		expect(pkg.enabled?.({} as NodeJS.ProcessEnv)).toEqual(expect.stringContaining("SENPI_ACCOUNTS_CODEX_POOL"));
+		expect(pkg.enabled?.({ SENPI_ACCOUNTS_CODEX_POOL: "1" } as NodeJS.ProcessEnv)).toBe(true);
+	});
+
+	it("narrows the catalog via SENPI_ACCOUNTS_CODEX_MODELS", () => {
+		const models = resolveCodexModels({ SENPI_ACCOUNTS_CODEX_MODELS: "gpt-5.5" } as NodeJS.ProcessEnv);
+		expect(models.map((model) => model.id)).toEqual(["gpt-5.5"]);
+	});
+
+	it("falls back to the full catalog when the override matches nothing", () => {
+		const models = resolveCodexModels({ SENPI_ACCOUNTS_CODEX_MODELS: "nope" } as NodeJS.ProcessEnv);
+		expect(models.length).toBeGreaterThan(1);
+	});
+});
+
+describe("codex-pool request routing", () => {
+	it("injects the selected account's token and account id", async () => {
+		const seen: Record<string, unknown>[] = [];
+		const stream = createCodexStreamSimple("/tmp/x", {
+			readPoolState: () => poolWith("alpha"),
+			writePoolState: () => {},
+			createStream: streamStub((options) => seen.push(options as Record<string, unknown>)),
+		});
+
+		for await (const _ of stream({} as never, streamContext) as AsyncIterable<unknown>) {
+			// drain
+		}
+
+		expect(seen[0]?.apiKey).toBe("access-alpha");
+		expect((seen[0]?.headers as Record<string, string>)["chatgpt-account-id"]).toBe("acct-alpha");
+	});
+
+	it("rotates to the next account when an attempt fails", async () => {
+		const used: string[] = [];
+		let first = true;
+		const stream = createCodexStreamSimple("/tmp/x", {
+			readPoolState: () => poolWith("alpha", "bravo"),
+			writePoolState: () => {},
+			createStream: ((model: never, ctx: never, options: never) => {
+				const key = (options as { apiKey: string }).apiKey;
+				used.push(key);
+				const shouldFail = first;
+				first = false;
+				return (async function* () {
+					if (shouldFail) throw new Error("429 rate limit");
+					yield { type: "text_delta", delta: "ok" };
+				})();
+			}) as never,
+		});
+
+		for await (const _ of stream({} as never, streamContext) as AsyncIterable<unknown>) {
+			// drain
+		}
+
+		expect(used).toHaveLength(2);
+		expect(new Set(used).size).toBe(2);
+	});
+
+	it("persists pool state so a block survives to the next request", async () => {
+		const writes: unknown[] = [];
+		let first = true;
+		const stream = createCodexStreamSimple("/tmp/x", {
+			readPoolState: () => poolWith("alpha", "bravo"),
+			writePoolState: (_dir, _id, state) => writes.push(state),
+			createStream: ((model: never, ctx: never, _options: never) => {
+				const shouldFail = first;
+				first = false;
+				return (async function* () {
+					if (shouldFail) throw new Error("429 rate limit");
+					yield { type: "text_delta", delta: "ok" };
+				})();
+			}) as never,
+		});
+
+		for await (const _ of stream({} as never, streamContext) as AsyncIterable<unknown>) {
+			// drain
+		}
+
+		expect(writes).toHaveLength(1);
+	});
+
+	it("carries accountId and email from slot metadata", () => {
+		expect(slotToCodexTokens(slot("alpha"))).toMatchObject({
+			access: "access-alpha",
+			accountId: "acct-alpha",
+			email: "alpha@example.com",
+		});
+	});
+
+	it("omits optional metadata that is absent", () => {
+		expect(slotToCodexTokens({ ...slot("bare"), meta: {} })).not.toHaveProperty("accountId");
+	});
+
+	it("surfaces a missing stream implementation as an attempt error", async () => {
+		const stream = createCodexStreamSimple("/tmp/x", {
+			readPoolState: () => poolWith("alpha"),
+			writePoolState: () => {},
+		});
+
+		await expect(async () => {
+			for await (const _ of stream({} as never, streamContext) as AsyncIterable<unknown>) {
+				// drain
+			}
+		}).rejects.toThrow(/no stream implementation/);
+	});
+
+	it("reports failover with both account names", async () => {
+		const messages: string[] = [];
+		let first = true;
+		const stream = createCodexStreamSimple("/tmp/x", {
+			readPoolState: () => poolWith("alpha", "bravo"),
+			writePoolState: () => {},
+			onFailover: (message) => messages.push(message),
+			createStream: ((model: never, ctx: never, _options: never) => {
+				const shouldFail = first;
+				first = false;
+				return (async function* () {
+					if (shouldFail) throw new Error("429 rate limit");
+					yield { type: "text_delta", delta: "ok" };
+				})();
+			}) as never,
+		});
+
+		for await (const _ of stream({} as never, streamContext) as AsyncIterable<unknown>) {
+			// drain
+		}
+
+		expect(messages[0]).toMatch(/codex-pool: account '\w+' failed/);
+		expect(messages[0]).toMatch(/retrying on/);
+	});
+
+	it("reports usage per account so the dashboard lists them", async () => {
+		const usage = await codexProviderPackage().accountUsage?.({
+			env: {} as NodeJS.ProcessEnv,
+			agentDir: "/tmp/codex-pool-missing",
+		});
+		expect(usage).toBeDefined();
+	});
+});

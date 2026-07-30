@@ -1,3 +1,6 @@
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import {
 	addAccount,
 	type AccountPoolState,
@@ -11,7 +14,9 @@ import {
 import type { SchedulingMode } from "../../core/affinity.js";
 import { emptyPool, readPool, type StoredPool } from "../../core/store.js";
 import type { ProviderBuildContext, ProviderConfig, ProviderPackage } from "../../core/types.js";
+import { resolveCodexModels } from "./models.js";
 import { type CodexTokens, loginCodex, refreshCodex } from "./oauth.js";
+import { createCodexStreamSimple } from "./stream.js";
 
 /**
  * OpenAI Codex multi-account.
@@ -26,6 +31,70 @@ import { type CodexTokens, loginCodex, refreshCodex } from "./oauth.js";
  */
 
 export const CODEX_POOL_PROVIDER_ID = "codex-pool";
+
+/**
+ * Stock's `openai-codex-responses` streamer.
+ *
+ * `@earendil-works/pi-ai` is a real package only inside senpi's compiled Bun
+ * binary (where it is injected as a virtual module). Running from source on
+ * Node an extension has to resolve it itself, and the addon deliberately does
+ * not depend on it -- see `../kiro/vendor/runtime.ts` for the same constraint.
+ *
+ * The Codex wire protocol is far too large to vendor, so instead of importing
+ * the bare specifier this resolves the copy nested inside the senpi that is
+ * actually running, via that module's own resolution root. Import failure is
+ * surfaced as a normal error, which `runWithFailover` treats as this account's
+ * attempt failing rather than taking the addon down.
+ */
+async function loadStockCodexStreamSimple(): Promise<
+	(model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AsyncIterable<unknown>
+> {
+	// A package `exports` map blocks deep subpath imports, so the nested copies
+	// are resolved as file URLs instead of bare specifiers.
+	const RELATIVE = "node_modules/@earendil-works/pi-ai/dist/api/openai-codex-responses.js";
+	const roots = [
+		// Installed as a dependency of this addon.
+		join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "node_modules", "@code-yeongyu", "senpi"),
+		// senpi running from source: its own workspace copy.
+		...(process.env.SENPI_REPO_ROOT ? [join(process.env.SENPI_REPO_ROOT, "packages", "coding-agent")] : []),
+	];
+	const specifiers = [
+		// Bun binary: senpi's injected virtual module.
+		"@earendil-works/pi-ai/api/openai-codex-responses",
+		...roots.map((root) => pathToFileURL(join(root, RELATIVE)).href),
+		// Hoisted install: pi-ai sits beside senpi rather than nested inside it.
+		...roots.map((root) => pathToFileURL(join(root, "..", "..", RELATIVE)).href),
+	];
+	const failures: string[] = [];
+	for (const specifier of specifiers) {
+		try {
+			const loaded = (await import(specifier)) as {
+				streamSimple?: (
+					model: Model<Api>,
+					context: Context,
+					options?: SimpleStreamOptions,
+				) => AsyncIterable<unknown>;
+			};
+			if (loaded.streamSimple) return loaded.streamSimple;
+			failures.push(`${specifier}: no streamSimple export`);
+		} catch (error) {
+			failures.push(`${specifier}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	throw new Error(`codex-pool: could not load stock's Codex stream (${failures.join("; ")})`);
+}
+
+function stockCodexStream(
+	model: Model<Api>,
+	context: Context,
+	options?: SimpleStreamOptions,
+): AssistantMessageEventStream {
+	const iterator = (async function* () {
+		const streamSimple = await loadStockCodexStreamSimple();
+		for await (const event of streamSimple(model, context, options)) yield event;
+	})();
+	return iterator as unknown as AssistantMessageEventStream;
+}
 
 type LoginCallbacks = Parameters<typeof loginCodex>[0] & {
 	onSelect?(prompt: { message: string; options: { id: string; label: string }[] }): Promise<string | undefined>;
@@ -173,6 +242,15 @@ export function codexProviderPackage(): ProviderPackage {
 				name: "OpenAI Codex (pool)",
 				baseUrl: "https://chatgpt.com/backend-api",
 				api: "openai-codex-responses",
+				// Required: an extension-registered provider id has no built-in
+				// catalog to inherit, so omitting this registers zero models and
+				// `--provider codex-pool` fails with "Unknown provider".
+				models: resolveCodexModels(context.env),
+				// Pool routing happens per request here, not via getApiKey: a
+				// provider-level key is resolved once, so it could never rotate.
+				streamSimple: createCodexStreamSimple(context.agentDir, {
+					createStream: stockCodexStream,
+				}),
 				oauth: {
 					name: "OpenAI Codex pool (ChatGPT Plus/Pro)",
 					login: async (callbacks) => accountManager(context.agentDir, callbacks as unknown as LoginCallbacks) as never,
