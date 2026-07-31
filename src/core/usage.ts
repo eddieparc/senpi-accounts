@@ -116,7 +116,7 @@ async function addonLines(
 					slot.blockReason === "auth_error"
 						? "needs re-login"
 						: isBlocked(slot, now)
-							? `blocked ${Math.ceil(((slot.blockedUntil ?? now) - now) / 1000)}s`
+							? `blocked ${Math.ceil(((slot.blockedUntil ?? now) - now) / 1000)}s (${slot.blockReason ?? "unknown"})`
 							: "available";
 				const left = typeof headroom === "number" ? `${percent(headroom)} remaining, ` : "";
 				return { provider: entry.id, detail: `${slot.name}: ${left}${state}` };
