@@ -32,5 +32,13 @@ jobs:
       # still fails the ci sync check.
       - run: npm install
 
+      # A tag push and a workflow_dispatch can both reach the same version, and npm
+      # rejects the second attempt with a hard error. Deciding here keeps a retried
+      # or overlapping release green instead of failing on a version that is done.
+      - name: Check whether this version is already published
+        id: guard
+        run: node scripts/publish-guard.mjs
+
       - name: Publish with OIDC trusted publishing
+        if: steps.guard.outputs.publish == 'true'
         run: npm publish
