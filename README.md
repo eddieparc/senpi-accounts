@@ -431,14 +431,34 @@ Published to the npm registry as
 [`@eddieparc/senpi-accounts`](https://www.npmjs.com/package/@eddieparc/senpi-accounts).
 A scoped package defaults to restricted access, which answers `402 Payment Required` on a
 free account, so `publishConfig.access` is `public` in `package.json` and no flag is
-needed:
+needed.
 
-```
-npm publish
+Releases go out from CI over
+[trusted publishing](https://docs.npmjs.com/trusted-publishers): `.github/workflows/release.yml`
+authenticates to the registry with a short-lived OIDC token, so no npm credential is
+stored anywhere and no publish needs an interactive 2FA approval. Bump the version, then
+push the tag:
+
+```bash
+npm version patch          # or minor / major
+git push origin main --follow-tags
 ```
 
-`prepublishOnly` runs typecheck, the full suite and the build first, so an unverified
-tree cannot reach the registry.
+The workflow also accepts a manual `workflow_dispatch` run. Either way `prepublishOnly`
+runs typecheck, the full suite and the build first, so an unverified tree cannot reach the
+registry, and npm attaches a signed provenance statement because the publish is attributable
+to the workflow that produced it.
+
+Publishing this way depends on three things staying in agreement, and npm only reports a
+mismatch when a publish actually runs:
+
+- the trusted publisher registered on npmjs.com names `eddieparc` / `senpi-accounts` /
+  `release.yml`, case-sensitive and including the extension
+- the workflow keeps `permissions: id-token: write`
+- `repository.url` in `package.json` matches the GitHub repository
+
+Renaming the workflow file therefore breaks releases until the npm setting is renamed to
+match.
 
 ## Development
 
