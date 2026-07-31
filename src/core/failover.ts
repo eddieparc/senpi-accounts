@@ -2,12 +2,15 @@ import {
 	type AccountPoolState,
 	type AccountSlot,
 	blockAccount,
+	clearFailureStreak,
+	isBlocked,
 	NoAvailableAccountError,
+	recordFailureStreak,
 	replaceAccount,
 	unblockAccount,
 } from "./accounts.js";
 import { placeRequest, type SchedulingMode, type UsageSnapshot } from "./affinity.js";
-import { classifyFailure, type FailureClassification } from "./failure.js";
+import { classifyFailure, type FailureClassification, TRANSIENT_RETRY_MS } from "./failure.js";
 
 export interface MigrationNotice {
 	/** The account the conversation was bound to, whose prompt cache is now lost. */
@@ -47,6 +50,33 @@ export class AllAccountsBlockedError extends Error {
 	}
 }
 
+/**
+ * Explain a pool that has nothing selectable left.
+ *
+ * The bare "all accounts are blocked (rate limited or awaiting re-login)" was
+ * actively misleading when the blocks came from upstream congestion: quota was
+ * untouched, so the dashboard and the error disagreed. Naming the reason and the
+ * earliest retry makes the two agree.
+ */
+function describeBlockedPool(accounts: readonly AccountSlot[], now: number): string {
+	if (accounts.length === 0) return "No accounts are registered";
+	const reasons = [...new Set(accounts.map((account) => account.blockReason ?? "unknown"))].sort();
+	const soonest = accounts
+		.filter((account) => account.blockReason !== "auth_error" && account.blockedUntil !== undefined)
+		.reduce<{ name: string; at: number } | undefined>((best, account) => {
+			const at = account.blockedUntil as number;
+			return best === undefined || at < best.at ? { name: account.name, at } : best;
+		}, undefined);
+
+	const parts = [`All ${accounts.length} account(s) are blocked (${reasons.join(", ")})`];
+	if (soonest) parts.push(`earliest retry in ${Math.max(0, Math.ceil((soonest.at - now) / 1000))}s (${soonest.name})`);
+	if (reasons.includes("auth_error")) parts.push("at least one needs /login");
+	if (!reasons.includes("quota") && !reasons.includes("rate_limit")) {
+		parts.push("quota is not the limiting factor here");
+	}
+	return `${parts.join("; ")}.`;
+}
+
 export interface RunWithFailoverOptions<T> {
 	state: AccountPoolState;
 	/** Conversation fingerprint used for cache-preserving placement. */
@@ -67,6 +97,10 @@ export interface RunWithFailoverOptions<T> {
 	now?: () => number;
 	refreshSkewMs?: number;
 	random?: () => number;
+	/** Injected so a congestion retry is not a wall-clock wait in tests. */
+	sleep?: (ms: number) => Promise<void>;
+	/** Congestion retries on one account before it is blocked instead. */
+	maxTransientRetries?: number;
 }
 
 export interface FailoverResult<T> {
@@ -76,6 +110,16 @@ export interface FailoverResult<T> {
 }
 
 const DEFAULT_REFRESH_SKEW_MS = 60_000;
+const DEFAULT_MAX_TRANSIENT_RETRIES = 2;
+const MAX_TRANSIENT_BACKOFF_MS = 2_000;
+/**
+ * Sidelining window for an account that keeps hitting upstream congestion.
+ *
+ * Deliberately seconds, not the minute a real fault earns: the account is
+ * healthy and the upstream is expected back shortly, so this only stops the
+ * current request from retrying the same busy account forever.
+ */
+const CONGESTION_SIDELINE_MS = 5_000;
 
 function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -105,13 +149,19 @@ export function applyAccountFailure(
 	const classification = classifyFailure(error);
 	if (!classification.failover || classification.block === undefined) return { state, classification };
 
-	const blockOptions: Parameters<typeof blockAccount>[2] = { now, attempt };
+	// The streak persists on the slot, so a pool that keeps failing backs off
+	// further each time instead of restarting at the base window on every request.
+	const streaked = recordFailureStreak(account);
+	const blockOptions: Parameters<typeof blockAccount>[2] = {
+		now,
+		attempt: Math.max(attempt, (streaked.consecutiveFailures ?? 1) - 1),
+	};
 	if (classification.retryAfterMs !== undefined) blockOptions.retryAfterMs = classification.retryAfterMs;
 	// The binding is deliberately kept: blocking the account already routes this
 	// and later requests elsewhere, and holding the binding lets the
 	// conversation return to its warm cache once the block expires.
 	return {
-		state: replaceAccount(state, blockAccount(account, classification.block, blockOptions)),
+		state: replaceAccount(state, blockAccount(streaked, classification.block, blockOptions)),
 		classification,
 	};
 }
@@ -132,6 +182,9 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 	let state = options.state;
 	const limit = options.maxAttempts ?? Math.max(1, state.accounts.length);
 	const attemptsByAccount = new Map<string, number>();
+	const transientByAccount = new Map<string, number>();
+	const transientLimit = options.maxTransientRetries ?? DEFAULT_MAX_TRANSIENT_RETRIES;
+	const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 	let lastError: unknown;
 	const updateState = (next: AccountPoolState) => {
 		state = next;
@@ -145,7 +198,7 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 		} catch (error) {
 			if (error instanceof NoAvailableAccountError) {
 				if (lastError !== undefined) throw lastError;
-				throw new AllAccountsBlockedError(error.message, error.retryAt, now());
+				throw new AllAccountsBlockedError(describeBlockedPool(state.accounts, now()), error.retryAt, now());
 			}
 			throw error;
 		}
@@ -170,12 +223,64 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 
 		try {
 			const value = await options.attempt(account);
-			return { value, account, state };
+			const settled = clearFailureStreak(account);
+			if (settled !== account) updateState(replaceAccount(state, settled));
+			return { value, account: settled, state };
 		} catch (error) {
 			lastError = error;
 			const priorAttempts = attemptsByAccount.get(account.name) ?? 0;
 			const transition = applyAccountFailure(state, account, options.key, error, now(), priorAttempts);
 			const { classification } = transition;
+
+			// Upstream congestion: the account is fine, so it keeps its slot and its
+			// warm cache. Only a streak of them is treated as the account's problem.
+			if (classification.transient === true && !(error as { committed?: boolean }).committed) {
+				const used = transientByAccount.get(account.name) ?? 0;
+				if (used < transientLimit) {
+					transientByAccount.set(account.name, used + 1);
+					const wait = Math.min(
+						MAX_TRANSIENT_BACKOFF_MS,
+						(classification.retryAfterMs ?? TRANSIENT_RETRY_MS) * 2 ** used,
+					);
+					options.onFailover?.({
+						from: account,
+						reason: `upstream busy: ${errorText(error)} (retrying on '${account.name}' in ${wait}ms)`,
+						attempt,
+					});
+					await sleep(wait);
+					attempt -= 1;
+					continue;
+				}
+				// Sideline this account so the request stops retrying it -- but never
+				// the last selectable one. Emptying the pool over the upstream's own
+				// load is the incident this fix exists to prevent: the next request
+				// would be refused outright even though the upstream may serve it.
+				const others = state.accounts.filter(
+					(candidate) => candidate.name !== account.name && !isBlocked(candidate, now()),
+				);
+				if (others.length === 0) {
+					options.onFailover?.({
+						from: account,
+						reason: `upstream busy ${used + 1}x on '${account.name}'; it stays selectable as the last account`,
+						attempt,
+					});
+					throw error;
+				}
+				attemptsByAccount.set(account.name, priorAttempts + 1);
+				updateState(
+					replaceAccount(
+						state,
+						blockAccount(account, "server_error", { now: now(), retryAfterMs: CONGESTION_SIDELINE_MS }),
+					),
+				);
+				options.onFailover?.({
+					from: account,
+					reason: `upstream busy ${used + 1}x on '${account.name}'; sidelining it for ${CONGESTION_SIDELINE_MS}ms`,
+					attempt,
+				});
+				continue;
+			}
+
 			if (!classification.failover || classification.block === undefined) throw error;
 			attemptsByAccount.set(account.name, priorAttempts + 1);
 			updateState(transition.state);
@@ -206,5 +311,5 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 		}
 	}
 
-	throw lastError ?? new AllAccountsBlockedError("No account completed the request");
+	throw lastError ?? new AllAccountsBlockedError(describeBlockedPool(state.accounts, now()), undefined, now());
 }
