@@ -120,7 +120,13 @@ describe("Kiro provider streaming", () => {
 		const persisted = writePoolState.mock.calls.at(-1)?.[2] as AccountPoolState | undefined;
 		const blocked = persisted?.accounts.find((account) => account.blockReason === "rate_limit");
 		expect(blocked).toBeDefined();
-		expect(Object.values(persisted?.bindings ?? {})).not.toContain(blocked?.name);
+		// CONTRACT CHANGE (cache affinity): the blocked account KEEPS its binding.
+		// Blocking already routes this and later requests elsewhere; retaining the
+		// binding is what lets the conversation return to its still-warm prompt
+		// cache once the block expires. The previous rule ("binding must not name
+		// the blocked account") permanently migrated the conversation and is the
+		// second root cause of the cache-hit drop.
+		expect(Object.values(persisted?.bindings ?? {})).toContain(blocked?.name);
 	});
 
 	it("passes an opt-in diagnostic logger to the vendored stream", async () => {

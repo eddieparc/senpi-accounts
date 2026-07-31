@@ -37,6 +37,29 @@ export function conversationKey(firstUserMessage: string | undefined, fallback?:
 	return `c-${createHash("sha256").update(text).digest("hex").slice(0, 16)}`;
 }
 
+export interface ConversationKeyInput {
+	/** senpi's per-session id (`SimpleStreamOptions.sessionId`), when available. */
+	sessionId?: string | undefined;
+	firstUserMessage?: string | undefined;
+	fallback?: string | undefined;
+}
+
+/**
+ * Preferred fingerprint: the session id.
+ *
+ * The first user message is a proxy for "which conversation is this", but it is
+ * not actually stable: once senpi compacts, the summary becomes the first user
+ * message and the content-derived key changes mid-conversation, dropping the
+ * binding and re-placing a conversation whose cache is warm. The session id
+ * does not move, so it anchors the binding for the whole session. Content
+ * hashing remains the fallback for callers that have no session id.
+ */
+export function conversationKeyFor(input: ConversationKeyInput): string {
+	const sessionId = input.sessionId?.trim();
+	if (sessionId) return `s-${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}`;
+	return conversationKey(input.firstUserMessage, input.fallback);
+}
+
 /** Highest-random-weight score; ties broken deterministically by name. */
 function score(key: string, accountName: string): bigint {
 	return createHash("sha256").update(`${key}\u0000${accountName}`).digest().readBigUInt64BE(0);
@@ -171,6 +194,15 @@ export function placeRequest(state: AccountPoolState, options: PlacementOptions)
 		mode === "balanced"
 			? pickByUsage(available, options.usage, random)
 			: (rendezvousOrder(options.key, available)[0] as AccountSlot);
+
+	// A binding that exists but is momentarily blocked is a *detour*, not a
+	// rebind: the warm prefix cache still lives on the bound account, and its
+	// block is a wall-clock window that expires. Overwriting the binding here
+	// would strand the conversation on the detour account for good, paying a
+	// fresh cache write now and forfeiting the warm one forever.
+	if (boundName && state.accounts.some((candidate) => candidate.name === boundName)) {
+		return { account, state, reusedBinding: false };
+	}
 
 	return { account, state: rememberBinding(state, options.key, account.name), reusedBinding: false };
 }

@@ -1,6 +1,6 @@
 import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { AccountSlot } from "../../core/accounts.js";
-import { conversationKey } from "../../core/affinity.js";
+import { conversationKeyFor } from "../../core/affinity.js";
 import { applyAccountFailure, runWithFailover } from "../../core/failover.js";
 import { readPool, writePool } from "../../core/store.js";
 import { createUsageCache, type UsageCache } from "../../core/usage-cache.js";
@@ -226,7 +226,14 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 		// Read per request so a login or pin made elsewhere takes effect on the
 		// very next turn.
 		const state = readState(agentDir, KIRO_PROVIDER_ID);
-		const key = conversationKey(firstUserText(context));
+		// senpi's session id is stable for the whole session; the first user message
+		// is not — compaction replaces it with the summary, which silently changed
+		// the key mid-conversation and threw away the warm binding. Anchor on the
+		// session id, keep content hashing as the fallback.
+		const key = conversationKeyFor({
+			sessionId: options?.sessionId,
+			firstUserMessage: firstUserText(context),
+		});
 
 		const iterator = (async function* () {
 			const result = await runWithFailover({
