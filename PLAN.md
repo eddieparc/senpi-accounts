@@ -1,10 +1,14 @@
 # senpi-accounts 실행 계획
 
-## 현재 상태 (2026-07-31, v0.2.1 배포 완료)
+## 현재 상태 (2026-07-31, v0.2.4 배포 완료)
 
 | 항목 | 상태 | 근거 |
 |---|---|---|
-| npm 배포 | **완료** | `@eddieparc/senpi-accounts@0.2.1` public, `npm view` latest=0.2.1 |
+| npm 배포 | **완료** | `@eddieparc/senpi-accounts@0.2.4` public, `npm view` latest=0.2.4 |
+| 태그 푸시 무인 배포 | **완료** | run 30596450530 (`event=push`, `v0.2.4`) 전 스텝 success, provenance 서명 |
+| 발행 멱등 가드 | **완료** | `scripts/publish-guard.mjs`, 이미 발행된 버전이면 publish 스텝을 건너뜀 |
+| CI 게이트 | **완료** | `.github/workflows/ci.yml` — push/PR에서 typecheck·test·build |
+| 결함 버전 차단 | **완료** | 0.2.0·0.2.1 `npm deprecate` (도구 호출 순서 버그) |
 | Kiro 계정 3개 | **완료** | `jgp3620`, `jgplabs`, `jgplabs01` (auth.json 계정 풀) |
 | Kiro opus-5 실호출 | **동작** | 격리 샌드박스에서 레지스트리 설치본으로 `ULW_REGISTRY_OK_20260731` 응답 |
 | 실시간 스트리밍 | **동작** | 첫 visible delta까지만 버퍼, 이후 live iterator |
@@ -14,17 +18,24 @@
 | 진단 로그 | **opt-in** | `KIRO_DEBUG=1`, 자격증명 리댁션 확인 |
 | OpenGateway 프로바이더 | **동작** | `/login` API-key 경로, `moonshotai/kimi-k3-ultrafast` |
 | `/usage` 대시보드 | **동작** | kiro 3계정 잔여량 집계 |
-| 테스트 | 207개 통과 | `npm test` (22 files) |
+| 테스트 | 211개 통과 | `npm test` (23 files) |
 | 타입체크 | 통과 | `npm run typecheck` |
 | README 실행 검증 | 통과 | `node scripts/check-readme.mjs` |
-| `/fast` 업스트림 버그 | 이슈 등록 | code-yeongyu/senpi#499 (senpi#503에서 수정) |
+| `/fast` 업스트림 버그 | PR 제출 | senpi#499→#503 후, 정정 이슈 #545/#548 · PR #547/#549 (OPEN) |
 
 senpi `2026.7.30` 기준으로 검증했다. 증거는
-`Eddie-Personal-Space/evidence/ulw-senpi-accounts-publish/`.
+`Eddie-Personal-Space/evidence/ulw-senpi-accounts-publish/`,
+`Eddie-Personal-Space/evidence/ulw-accounts-followup/`.
 
 ### 남은 작업
 
-없음. 다음 작업은 새 기능 요청이나 실사용 중 발견되는 회귀에서 시작한다.
+저장소 자체에는 없다. 아래는 의도적으로 열어둔 항목이며, 각자 조건이 갖춰질 때 착수한다.
+
+| 항목 | 왜 지금 안 하는가 |
+|---|---|
+| `codex-pool` 실API 검증 | opt-in(`SENPI_ACCOUNTS_CODEX_POOL=1`)이고 ChatGPT가 쿼터 엔드포인트를 주지 않아 배치가 어피니티로만 동작한다. 실사용 시점에 검증한다 |
+| `alibaba-token-plan` 종단 검증 | 이 머신에 키가 없다. 순정 프로바이더이므로 키만 넣으면 동작한다 |
+| 릴리스에서 `npm ci` 사용 | `@code-yeongyu/senpi`가 번들한 의존성(`https-proxy-agent`, `@hono/node-server`, `agent-base`)을 npm이 lockfile 누락으로 보고한다. 업스트림이 풀릴 때까지 `npm install` 유지 |
 
 ---
 
@@ -74,8 +85,8 @@ quota 문자열이 섞였을 때 senpi가 30분을 통째로 억제해서, 5분 
 
 | 모드 | 동작 |
 |---|---|
-| `cache-first` | 계정 고정 우선, 429면 짧게 대기(상한 있음). 캐시 히트 최대 |
-| `balanced` (기본) | 계정 고정하되 429면 즉시 전환 |
+| `cache-first` (기본) | 계정 고정 우선, 429면 짧게 대기(상한 있음). 캐시 히트 최대 |
+| `balanced` | 계정 고정하되 429면 즉시 전환 |
 | `spread` | 순수 라운드로빈. 부하 균등, 캐시 포기 |
 
 ## 3. /login · /logout 통합 (요구사항 10)
@@ -98,27 +109,28 @@ quota 문자열이 섞였을 때 senpi가 30분을 통째로 억제해서, 5분 
 UX 원칙: 목록에 계정별 상태를 함께 보여준다 —
 `jgplabs <메일> — available, google` / `jgp3620 — blocked 12m (rate_limit)`.
 
-## 4. 구현 순서
+## 4. 구현 순서 — 결과
 
-**Phase A — Kiro 완성 (최우선, 아침까지)**
-1. `retryAfterMs` 전파 + senpi 쿨다운 정합 테스트
-2. 대화 지문 기반 어피니티 + 스케줄링 모드
-3. `/login` 계정 관리 메뉴
-4. 샌드박스에서 Google 로그인 3계정 등록 → **opus-5 실호출 검증**
-5. 429 강제 유발 → 전환·failback 안정화 테스트
+**Phase A — Kiro (완료)**
+1. `retryAfterMs` 전파 + senpi 쿨다운 정합 — 완료. `src/core/failover.ts`, `test/core-failover.test.ts`
+2. 대화 지문 기반 어피니티 + 스케줄링 모드 — 완료. `src/core/affinity.ts`, `test/core-affinity.test.ts`
+3. `/login` 계정 관리 메뉴 — 완료. `src/providers/kiro/index.ts`
+4. 3계정 등록 → opus-5 실호출 — 완료. 격리 샌드박스에서 레지스트리 설치본으로 검증
+5. 429 전환·failback — 완료. 전환/차단 상태가 모든 전이에서 디스크에 영속
 
-**Phase B — 나머지 프로바이더 (격리 패키지)**
-6. Codex 다중계정 (fast 모드는 순정 `service-tier.ts` 그대로 사용)
-7. Anthropic — 순정 `/claude-account`에 위임, 우리는 진단만 노출
-8. Alibaba Coding Plan / OpenCode Go 패키지 스캐폴드
+**Phase B — 나머지 프로바이더**
+6. Codex 다중계정 — `codex-pool`로 구현(opt-in). 순정 스트리머를 런타임에 해석해 재사용
+7. Anthropic — 순정 `/claude-account`가 이미 다중계정이므로 재구현하지 않음(의도적 미구현)
+8. Alibaba Token Plan / OpenCode Go — 순정이 API 키로 처리하므로 애드온 불필요(의도적 미구현).
+   순정에 없던 TokenRouter·OpenGateway만 프로바이더로 추가
 
-**Phase C — 마감**
-9. 키체인 옵션 + 실제 라운드트립 테스트
-10. 프로바이더 1개 고장 시 나머지 정상 등록 확인 (격리 회귀 테스트)
+**Phase C — 마감 (완료)**
+9. 키체인 옵션 + 라운드트립 — 완료. `test/core-keychain.test.ts`, `test/core-keychain-probe.test.ts`
+10. 프로바이더 1개 고장 시 격리 — 완료. `test/extension.test.ts`
 
-## 5. 확인이 필요한 결정 사항
+## 5. 결정 사항 — 확정됨
 
-- **D1**: `/logout kiro`를 "전체 삭제"로 두는 것이 맞는지. 개별 삭제는
-  `/login kiro` 메뉴와 `/kiro-account remove`로 제공하는 안을 제안한다.
-- **D2**: 기본 스케줄링 모드를 `balanced`로 할지 `cache-first`로 할지.
-  카톡 근거상 개인 사용은 fill-first(=캐시 우선)에 가깝다.
+- **D1**: `/logout kiro`는 순정과 동일하게 전체 삭제. 개별 삭제는 `/login kiro` 메뉴의
+  `Log out of one account`가 담당한다(`src/providers/kiro/index.ts`).
+- **D2**: 기본 스케줄링 모드는 `cache-first`. 개인 사용은 프리픽스 캐시 히트가
+  잔여량 균등보다 이득이 크다(`src/core/affinity.ts` `DEFAULT_SCHEDULING_MODE`).
