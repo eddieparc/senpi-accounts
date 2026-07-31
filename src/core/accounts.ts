@@ -26,6 +26,12 @@ export interface AccountSlot {
 	blockReason?: BlockReason;
 	/** Free-form provider metadata (region, profileArn, authMethod, ...). */
 	meta?: Record<string, unknown>;
+	/**
+	 * Blocks in a row without an intervening success, so the backoff in
+	 * {@link blockAccount} grows across requests instead of restarting at the
+	 * base window every time. Cleared by {@link clearFailureStreak}.
+	 */
+	consecutiveFailures?: number;
 }
 
 export type SelectionStrategy = "fill-first" | "rotate";
@@ -144,6 +150,18 @@ export function blockAccount(
 	const backoff = Math.min(MAX_BLOCK_MS, base * 2 ** attempt);
 	const duration = Math.min(MAX_BLOCK_MS, options.retryAfterMs ?? backoff);
 	return { ...account, blockedUntil: now + duration, blockReason: reason };
+}
+
+/** Count one more block against a slot, so the next backoff is longer. */
+export function recordFailureStreak(account: AccountSlot): AccountSlot {
+	return { ...account, consecutiveFailures: (account.consecutiveFailures ?? 0) + 1 };
+}
+
+/** Forget the streak after a request succeeds on this slot. */
+export function clearFailureStreak(account: AccountSlot): AccountSlot {
+	if (account.consecutiveFailures === undefined) return account;
+	const { consecutiveFailures: _consecutiveFailures, ...rest } = account;
+	return rest;
 }
 
 /** Clear an `auth_error` block, e.g. after a successful re-login. */
