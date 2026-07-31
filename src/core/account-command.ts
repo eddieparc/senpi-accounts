@@ -3,7 +3,10 @@ import {
 	type AccountSlot,
 	addAccount,
 	assertValidAccountName,
+	DEFAULT_MIGRATION_POLICY,
 	isBlocked,
+	MIGRATION_POLICIES,
+	type MigrationPolicy,
 	pinAccount,
 	removeAccount,
 	type SelectionStrategy,
@@ -66,8 +69,10 @@ function listOutput(providerId: string, state: AccountPoolState, now: number): C
 
 	const strategy = state.strategy ?? "fill-first";
 	const available = state.accounts.filter((slot) => !isBlocked(slot, now)).length;
+	const migration = state.migration ?? DEFAULT_MIGRATION_POLICY;
 	const lines = [
-		`${providerId} accounts (${available}/${state.accounts.length} available, strategy: ${strategy}):`,
+		`${providerId} accounts (${available}/${state.accounts.length} available, strategy: ${strategy}, ` +
+			`migration: ${migration}):`,
 		...state.accounts.map((slot) => formatSlot(slot, state, now)),
 	];
 	return { text: lines.join("\n"), level: "info" };
@@ -75,7 +80,8 @@ function listOutput(providerId: string, state: AccountPoolState, now: number): C
 
 const USAGE =
 	"add <name> | remove <name> | logout [all] | pin <name> | unpin | " +
-	"mode <cache-first|balanced|spread> | strategy <fill-first|rotate> | unblock <name> | list";
+	"mode <cache-first|balanced|spread> | migrate <auto|ask|never> | " +
+	"strategy <fill-first|rotate> | unblock <name> | list";
 
 const SCHEDULING_MODES: SchedulingMode[] = ["cache-first", "balanced", "spread"];
 
@@ -160,6 +166,21 @@ export async function runAccountCommand(deps: AccountCommandDeps, rawArgs: strin
 				}
 				write(deps.agentDir, deps.providerId, { ...state, mode: target as SchedulingMode });
 				return { text: `${deps.providerId} scheduling mode set to ${target}.`, level: "info" };
+			}
+
+			// Migration policy decides what happens when a conversation can no longer
+			// use the account holding its warm prompt cache. A blocked account is a
+			// reversible detour and is never gated; this covers only the irreversible
+			// case, where the bound account has left the pool.
+			case "migrate": {
+				if (!target || !MIGRATION_POLICIES.includes(target as MigrationPolicy)) {
+					return {
+						text: `Usage: /${deps.providerId}-account migrate <${MIGRATION_POLICIES.join("|")}>`,
+						level: "error",
+					};
+				}
+				write(deps.agentDir, deps.providerId, { ...state, migration: target as MigrationPolicy });
+				return { text: `${deps.providerId} migration policy set to ${target}.`, level: "info" };
 			}
 
 			case "pin": {

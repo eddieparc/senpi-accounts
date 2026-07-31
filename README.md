@@ -142,6 +142,7 @@ senpi -e /absolute/path/to/senpi-accounts --list-models | grep kiro
 | Pin / Clear the pin | Force every request onto one account |
 | Clear a block | Lift a rate-limit or auth block early |
 | Scheduling mode | `cache-first` (default), `balanced` or `spread` |
+| Migration policy | `auto` (default), `ask` or `never` — see [Migration policy](#migration-policy) |
 
 Both logout paths live inside `/login kiro`, which is the account manager. Full
 logout asks for confirmation first, and clears the pin and conversation bindings
@@ -376,6 +377,42 @@ conversations each:
 
 The same conversation key placed twice returns the same account with `reusedBinding=true`,
 so affinity holds across turns.
+
+The conversation key is senpi's session id when the runtime supplies one, and a hash of the
+first user message otherwise. The session id is preferred because it does not move:
+compaction replaces the first user message with the summary, which changed a content-derived
+key mid-conversation and dropped the binding on a conversation whose cache was warm.
+
+### Migration policy
+
+A conversation can lose the account holding its warm prompt cache in two very different
+ways, and only one of them is worth telling you about:
+
+| Case | What it means | Policy applies |
+|---|---|---|
+| **Detour** | The account is rate limited, quota blocked or briefly failing. The block is a wall-clock window that expires, so the binding is kept and the conversation returns once it lifts. | No — always allowed |
+| **Permanent rebind** | The bound account has left the pool (logged out, removed). The cache is gone with it. | Yes |
+
+```
+/kiro-account migrate <auto|ask|never>
+```
+
+| Policy | Behaviour on a permanent rebind |
+|---|---|
+| `auto` (default) | Move to another account silently. |
+| `ask` | Move, and report which account the conversation left. |
+| `never` | Refuse: the request fails instead of silently moving to a cold account. |
+
+The policy is also reachable from the `/login kiro` menu as **Migration policy**, and the
+current value is shown by `/kiro-account list`.
+
+Notices never interrupt a stream: they are emitted after placement and are suppressed in
+non-interactive modes (`print`, RPC without UI), where no one is watching. A failure inside
+the notification is swallowed rather than surfaced as a request failure.
+
+`never` is for keeping a conversation and its cache on exactly one account, at the cost of
+the turn that would have moved it. It does not block a detour, because a detour is
+reversible.
 
 ### Interaction with senpi's own fallback
 
