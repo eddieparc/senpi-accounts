@@ -1,7 +1,7 @@
 import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { AccountSlot } from "../../core/accounts.js";
-import { conversationKey } from "../../core/affinity.js";
-import { runWithFailover } from "../../core/failover.js";
+import { conversationKeyFor } from "../../core/affinity.js";
+import { type MigrationNotice, runWithFailover } from "../../core/failover.js";
 import { readPool, writePool } from "../../core/store.js";
 import { type CodexTokens, refreshCodex } from "./oauth.js";
 
@@ -123,6 +123,7 @@ export interface CodexStreamDeps {
 		options?: SimpleStreamOptions,
 	) => AssistantMessageEventStream;
 	onFailover?: (message: string) => void;
+	reportMigration?: (providerId: string, notice: MigrationNotice) => void;
 }
 
 export function createCodexStreamSimple(agentDir: string, deps: CodexStreamDeps = {}) {
@@ -134,7 +135,10 @@ export function createCodexStreamSimple(agentDir: string, deps: CodexStreamDeps 
 		// Read per request so a login, pin, or block made elsewhere takes effect
 		// on the very next turn.
 		const state = readState(agentDir, CODEX_POOL_PROVIDER_ID);
-		const key = conversationKey(firstUserText(context));
+		const key = conversationKeyFor({
+			sessionId: options?.sessionId,
+			firstUserMessage: firstUserText(context),
+		});
 
 		const iterator = (async function* () {
 			const result = await runWithFailover({
@@ -150,6 +154,7 @@ export function createCodexStreamSimple(agentDir: string, deps: CodexStreamDeps 
 							(event.to ? `retrying on '${event.to.name}'` : "no account left to try"),
 					);
 				},
+				onMigration: (notice) => deps.reportMigration?.(CODEX_POOL_PROVIDER_ID, notice),
 				attempt: async (account) => {
 					const tokens = slotToCodexTokens(account);
 					const headers = { ...options?.headers };

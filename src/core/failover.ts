@@ -6,8 +6,15 @@ import {
 	replaceAccount,
 	unblockAccount,
 } from "./accounts.js";
-import { placeRequest, releaseBinding, type SchedulingMode, type UsageSnapshot } from "./affinity.js";
+import { placeRequest, type SchedulingMode, type UsageSnapshot } from "./affinity.js";
 import { classifyFailure, type FailureClassification } from "./failure.js";
+
+export interface MigrationNotice {
+	/** The account the conversation was bound to, whose prompt cache is now lost. */
+	from: string;
+	/** The account now serving it. */
+	to: string;
+}
 
 export interface FailoverEvent {
 	from: AccountSlot;
@@ -50,6 +57,12 @@ export interface RunWithFailoverOptions<T> {
 	usage?: UsageSnapshot;
 	maxAttempts?: number;
 	onFailover?: (event: FailoverEvent) => void;
+	/**
+	 * Called only when a conversation irreversibly leaves the account holding its
+	 * warm cache, and only under the `ask` policy. A reversible detour never
+	 * fires this, so a rate limit stays silent.
+	 */
+	onMigration?: (notice: MigrationNotice) => void;
 	onStateChange?: (state: AccountPoolState) => void;
 	now?: () => number;
 	refreshSkewMs?: number;
@@ -94,8 +107,11 @@ export function applyAccountFailure(
 
 	const blockOptions: Parameters<typeof blockAccount>[2] = { now, attempt };
 	if (classification.retryAfterMs !== undefined) blockOptions.retryAfterMs = classification.retryAfterMs;
+	// The binding is deliberately kept: blocking the account already routes this
+	// and later requests elsewhere, and holding the binding lets the
+	// conversation return to its warm cache once the block expires.
 	return {
-		state: releaseBinding(replaceAccount(state, blockAccount(account, classification.block, blockOptions)), key),
+		state: replaceAccount(state, blockAccount(account, classification.block, blockOptions)),
 		classification,
 	};
 }
@@ -105,7 +121,8 @@ export function applyAccountFailure(
  *
  * A failure that another account could survive (429, quota, auth, 5xx) blocks
  * the offending account and replays the request elsewhere; the conversation's
- * binding is released so it can settle on the account that actually served it.
+ * binding is retained so that once the block expires the conversation returns to
+ * the account whose prompt-prefix cache is still warm.
  * Client-side errors propagate untouched, because replaying them would only
  * burn a second subscription on the same bad request.
  */
@@ -134,6 +151,9 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 		}
 
 		updateState(placement.state);
+		if (placement.migratedFrom !== undefined) {
+			options.onMigration?.({ from: placement.migratedFrom, to: placement.account.name });
+		}
 		let account = placement.account;
 
 		if (options.refresh && account.expires <= now() + skew) {
@@ -142,7 +162,7 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 				updateState(replaceAccount(state, unblockAccount(account)));
 			} catch (error) {
 				lastError = error;
-				updateState(releaseBinding(replaceAccount(state, blockAccount(account, "auth_error")), options.key));
+				updateState(replaceAccount(state, blockAccount(account, "auth_error")));
 				options.onFailover?.({ from: account, reason: `token refresh failed: ${errorText(error)}`, attempt });
 				continue;
 			}

@@ -30,6 +30,17 @@ export interface AccountSlot {
 
 export type SelectionStrategy = "fill-first" | "rotate";
 
+/**
+ * What may happen when a conversation can no longer use the account it is bound
+ * to. A blocked account is a reversible detour and is never gated; this decides
+ * only the irreversible case, where the bound account has left the pool.
+ */
+export type MigrationPolicy = "auto" | "ask" | "never";
+
+export const MIGRATION_POLICIES: MigrationPolicy[] = ["auto", "ask", "never"];
+
+export const DEFAULT_MIGRATION_POLICY: MigrationPolicy = "auto";
+
 export interface AccountPoolState {
 	accounts: AccountSlot[];
 	/** Slot name pinned by the user; overrides strategy while available. */
@@ -41,6 +52,8 @@ export interface AccountPoolState {
 	mode?: "cache-first" | "balanced" | "spread";
 	/** Conversation fingerprint -> account name, preserving warm prompt caches. */
 	bindings?: Record<string, string>;
+	/** How to treat an irreversible move off a bound account; see {@link MigrationPolicy}. */
+	migration?: MigrationPolicy;
 }
 
 export const MAX_BLOCK_MS = 48 * 60 * 60 * 1_000;
