@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyFailure, retryAfterMs, statusOf } from "../src/core/failure.js";
+import { classifyFailure, TRANSIENT_RETRY_MS, retryAfterMs, statusOf } from "../src/core/failure.js";
 
 function httpError(status: number, message = "request failed"): Error & { status: number } {
 	return Object.assign(new Error(message), { status });
@@ -61,9 +61,18 @@ describe("failure classification", () => {
 		expect(classifyFailure(new Error("invalid_grant")).block).toBe("auth_error");
 	});
 
-	it("briefly blocks server-side failures", () => {
+	it("briefly blocks server-side failures that name a broken request", () => {
 		expect(classifyFailure(httpError(503)).block).toBe("server_error");
-		expect(classifyFailure(new Error("Overloaded")).block).toBe("server_error");
+	});
+
+	// CONTRACT CHANGE: a bare "Overloaded" says the upstream is busy, not that this
+	// account is at fault. Blocking the account for it removed a healthy
+	// subscription from the pool, and one hiccup walked the whole pool -- three
+	// accounts blocked inside twenty seconds while every one still had quota. It is
+	// now transient, so the same account is retried and keeps its warm cache.
+	it("treats a bare overload as transient rather than blocking the account", () => {
+		expect(classifyFailure(new Error("Overloaded"))).toMatchObject({ failover: true, transient: true });
+		expect(classifyFailure(new Error("Overloaded")).block).toBeUndefined();
 	});
 
 	it("does not fail over on client errors that another account would also hit", () => {
@@ -104,12 +113,17 @@ describe("real upstream auth wordings", () => {
 });
 
 describe("transient upstream overload", () => {
-	it("fails over on Kiro's high-load message", () => {
+	it("retries Kiro's high-load message without blaming the account", () => {
 		// Kiro's CodeWhisperer backend reports overload as prose with no HTTP
 		// status. Unrecognised, it failed the request outright even though other
 		// accounts in the pool were healthy. Observed live.
+		//
+		// CONTRACT CHANGE: recognising it is not enough -- it used to block the
+		// account, which is what emptied the pool during the 14:48-14:50 incident.
+		// It now carries `transient` and a retry delay so failover retries the same
+		// account instead of spending the next subscription on someone else's load.
 		expect(classifyFailure(new Error("Encountered unexpectedly high load when processing the request, please try again."))).toEqual(
-			{ block: "server_error", failover: true },
+			{ failover: true, transient: true, retryAfterMs: TRANSIENT_RETRY_MS },
 		);
 	});
 

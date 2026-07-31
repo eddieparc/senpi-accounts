@@ -383,6 +383,55 @@ first user message otherwise. The session id is preferred because it does not mo
 compaction replaces the first user message with the summary, which changed a content-derived
 key mid-conversation and dropped the binding on a conversation whose cache was warm.
 
+### Upstream congestion is not an account fault
+
+Kiro's CodeWhisperer backend answers a busy moment with prose and no HTTP status:
+
+```
+Encountered unexpectedly high load when processing the request, please try again.
+```
+
+That used to block the account for 60s. One request walks the whole pool, so a
+twenty-second backend hiccup blocked all three accounts and the next request was
+refused with "All accounts are blocked (rate limited or awaiting re-login)" while
+every subscription still had quota — 22%, 60% and 35% in the observed incident.
+
+Congestion is now **transient**: the same account is retried after a short bounded
+delay (400ms, doubling, capped at 2s), which also keeps its warm prompt cache. Only
+after repeated congestion on one account is it sidelined, for seconds rather than a
+minute, and never when it is the last selectable account. A genuine HTTP 5xx still
+blocks immediately.
+
+| Symptom | Treated as | Effect on the account |
+|---|---|---|
+| `429`, rate limit, throttled | account is over its limit | blocked, failover |
+| quota / entitlement / billing | subscription exhausted | blocked, failover |
+| `401` / `403`, bad token | needs re-login | blocked until `/login` |
+| HTTP `5xx`, bad gateway | broken request | blocked briefly, failover |
+| "high load", "try again", "at capacity" | **upstream is busy** | **not blocked; retried** |
+
+The block window also grows properly now. `blockAccount` always computed
+`base * 2**attempt`, but the attempt counter lived in a map rebuilt on every
+request, so it was always 0 and every block lasted exactly 60s. The streak is
+persisted on the account and cleared by a success, so repeated failures back off
+60s → 120s → 240s.
+
+When the pool genuinely has nothing left, the error says so in full:
+
+```
+All 3 account(s) are blocked (server_error); earliest retry in 47s (jgplabs);
+quota is not the limiting factor here.
+```
+
+`/usage` names the reason too, so it can no longer report `available` for an
+account that placement is refusing to use:
+
+```
+kiro  jgplabs: 22% remaining, available
+kiro  jgplabs01: 60% remaining, blocked 47s (server_error)
+kiro  jgp3620: 35% remaining, needs re-login
+```
+
 ### Migration policy
 
 A conversation can lose the account holding its warm prompt cache in two very different

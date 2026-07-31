@@ -7,7 +7,16 @@ export interface FailureClassification {
 	failover: boolean;
 	/** Upstream-supplied retry delay in milliseconds, when present. */
 	retryAfterMs?: number;
+	/**
+	 * The upstream was busy, not this account. Retrying the same account shortly
+	 * is correct; blocking it would take a healthy subscription out of the pool
+	 * over a condition it did not cause.
+	 */
+	transient?: boolean;
 }
+
+/** Delay before retrying a congested upstream, when it names no delay itself. */
+export const TRANSIENT_RETRY_MS = 400;
 
 function messageOf(error: unknown): string {
 	if (typeof error === "string") return error;
@@ -103,18 +112,28 @@ export function classifyFailure(error: unknown): FailureClassification {
 		return { block: "auth_error", failover: true };
 	}
 
-	// "high load" / "try again" are how Kiro's CodeWhisperer backend reports a
-	// transient overload: no HTTP status reaches us and none of the usual keywords
-	// appear, so without this the request failed outright instead of retrying on
-	// another account. Observed live on two of three accounts simultaneously.
+	// A real 5xx names a broken request: block the account and move on.
 	if (
 		(status !== undefined && status >= 500) ||
-		/overloaded|service unavailable|bad gateway|internal server error/.test(text) ||
-		/high load|please try again|try again later|temporarily unavailable|capacity/.test(text)
+		/service unavailable|bad gateway|internal server error/.test(text)
 	) {
 		return retryAfter === undefined
 			? { block: "server_error", failover: true }
 			: { block: "server_error", failover: true, retryAfterMs: retryAfter };
+	}
+
+	// "high load" / "try again" is how Kiro's CodeWhisperer backend reports that
+	// *it* is busy; no HTTP status reaches us. Blocking the account for that
+	// walked one hiccup through the whole pool -- three accounts blocked inside
+	// twenty seconds -- and reported it as "all accounts are blocked" while every
+	// subscription still had quota. It is the upstream that needs a moment, so the
+	// same account is retried and its warm prompt cache is kept.
+	if (/high load|overloaded|please try again|try again later|temporarily unavailable|capacity/.test(text)) {
+		return {
+			failover: true,
+			transient: true,
+			retryAfterMs: retryAfter ?? TRANSIENT_RETRY_MS,
+		};
 	}
 
 	return { failover: false };
