@@ -1,7 +1,7 @@
 import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { AccountSlot } from "../../core/accounts.js";
 import { conversationKeyFor } from "../../core/affinity.js";
-import { applyAccountFailure, runWithFailover } from "../../core/failover.js";
+import { applyAccountFailure, type MigrationNotice, runWithFailover } from "../../core/failover.js";
 import { readPool, writePool } from "../../core/store.js";
 import { createUsageCache, type UsageCache } from "../../core/usage-cache.js";
 import type { ProviderBuildContext, ProviderConfig } from "../../core/types.js";
@@ -161,6 +161,7 @@ export interface KiroProviderDeps {
 	refresh?: (tokens: KiroTokens) => Promise<KiroTokens>;
 	createStream?: typeof createKiroStream;
 	onFailover?: (message: string) => void;
+	reportMigration?: (providerId: string, notice: MigrationNotice) => void;
 	logger?: DebugLogger;
 	/** Per-account headroom source for `balanced` placement. */
 	usage?: UsageCache;
@@ -252,6 +253,7 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 							(event.to ? `retrying on '${event.to.name}'` : "no account left to try"),
 					);
 				},
+				onMigration: (notice) => deps.reportMigration?.(KIRO_PROVIDER_ID, notice),
 				onStateChange: (next) => writeState(agentDir, KIRO_PROVIDER_ID, next),
 				attempt: async (account) => {
 					const tokens = slotToTokens(account);

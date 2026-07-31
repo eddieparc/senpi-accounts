@@ -27,6 +27,7 @@ export interface StoredPool {
 	cursor?: number;
 	mode?: AccountPoolState["mode"];
 	bindings?: Record<string, string>;
+	migration?: AccountPoolState["migration"];
 }
 
 export function emptyPool(): StoredPool {
@@ -77,6 +78,7 @@ function toPoolState(stored: StoredPool): AccountPoolState {
 	if (stored.cursor !== undefined) state.cursor = stored.cursor;
 	if (stored.mode !== undefined) state.mode = stored.mode;
 	if (stored.bindings !== undefined) state.bindings = stored.bindings;
+	if (stored.migration !== undefined) state.migration = stored.migration;
 	return state;
 }
 
@@ -99,6 +101,7 @@ export function writePool(agentDir: string, providerId: string, state: AccountPo
 	if (state.cursor !== undefined) stored.cursor = state.cursor;
 	if (state.mode !== undefined) stored.mode = state.mode;
 	if (state.bindings !== undefined) stored.bindings = state.bindings;
+	if (state.migration !== undefined) stored.migration = state.migration;
 	data[providerId] = stored;
 	writeAuthFile(agentDir, data);
 }

@@ -13,6 +13,7 @@ import {
 	unpinAccount,
 } from "../../core/accounts.js";
 import type { SchedulingMode } from "../../core/affinity.js";
+import { migrationSink } from "../../core/migration-sink.js";
 import { emptyPool, readPool, type StoredPool } from "../../core/store.js";
 import type { ProviderBuildContext, ProviderConfig, ProviderPackage } from "../../core/types.js";
 import { resolveCodexModels } from "./models.js";
@@ -157,6 +158,7 @@ function toStored(state: AccountPoolState): StoredPool {
 	if (state.mode !== undefined) pool.mode = state.mode;
 	if (state.bindings !== undefined) pool.bindings = state.bindings;
 	if (state.cursor !== undefined) pool.cursor = state.cursor;
+	if (state.migration !== undefined) pool.migration = state.migration;
 	return pool;
 }
 
@@ -303,6 +305,7 @@ export function codexProviderPackage(): ProviderPackage {
 				// provider-level key is resolved once, so it could never rotate.
 				streamSimple: createCodexStreamSimple(context.agentDir, {
 					createStream: stockCodexStream,
+					reportMigration: migrationSink.report,
 				}),
 				oauth: {
 					name: "OpenAI Codex pool (ChatGPT Plus/Pro)",

@@ -8,6 +8,7 @@ import type {
 	ProviderPackage,
 	SenpiExtensionAPI,
 } from "./core/types.js";
+import { migrationSink } from "./core/migration-sink.js";
 import { buildUsageReport } from "./core/usage.js";
 
 export type { ProviderPackage, ProviderHealth, ProviderBuildContext } from "./core/types.js";
@@ -74,6 +75,12 @@ export default async function senpiAccounts(pi: SenpiExtensionAPI): Promise<void
 	const registered = packages.filter((entry) =>
 		allHealth.some((item) => item.providerId === entry.id && item.status === "registered"),
 	);
+
+	// A provider stream has no ExtensionContext of its own, so the newest session
+	// context is captured here and migration notices are delivered through it.
+	pi.on("session_start", (_event, ctx) => {
+		migrationSink.attach(ctx);
+	});
 
 	pi.registerCommand("usage", {
 		description: "Show remaining usage across every configured subscription.",

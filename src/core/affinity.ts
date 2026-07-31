@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { type AccountPoolState, type AccountSlot, isBlocked, NoAvailableAccountError } from "./accounts.js";
+import {
+	type AccountPoolState,
+	type AccountSlot,
+	DEFAULT_MIGRATION_POLICY,
+	isBlocked,
+	type MigrationPolicy,
+	NoAvailableAccountError,
+} from "./accounts.js";
 
 /**
  * Account placement.
@@ -128,7 +135,19 @@ export interface PlacementOptions {
 	usage?: UsageSnapshot;
 	now?: number;
 	random?: () => number;
+	/** Overrides the pool's stored policy; see {@link MigrationPolicy}. */
+	migration?: MigrationPolicy;
 }
+
+/**
+ * Why this request landed where it did.
+ *
+ * `detour` and `permanent-rebind` are deliberately distinct: a detour is a
+ * wall-clock block that expires, so the warm cache is still worth returning to,
+ * while a permanent rebind means the bound account is gone and the cache with
+ * it. Only the irreversible case is worth telling the user about.
+ */
+export type PlacementKind = "pinned" | "affinity-hit" | "cold" | "detour" | "permanent-rebind" | "spread";
 
 export interface Placement {
 	account: AccountSlot;
@@ -136,6 +155,32 @@ export interface Placement {
 	state: AccountPoolState;
 	/** True when this request reused an existing warm binding. */
 	reusedBinding: boolean;
+	/** How this account was chosen; see {@link PlacementKind}. */
+	placement: PlacementKind;
+	/**
+	 * The account this conversation permanently left, present only on a
+	 * `permanent-rebind` under the `ask` policy. `auto` leaves it unset so the
+	 * silent path cannot accidentally notify.
+	 */
+	migratedFrom?: string;
+}
+
+/**
+ * Raised when the `never` migration policy forbids moving a conversation off an
+ * account that has left the pool. Failing the request is the point: it keeps the
+ * conversation and its prompt cache on one account, at the cost of this turn.
+ */
+export class PermanentRebindRefused extends Error {
+	readonly boundAccount: string;
+
+	constructor(boundAccount: string) {
+		super(
+			`Conversation is bound to '${boundAccount}', which is no longer in the pool, and the migration policy is 'never'. ` +
+				"Re-add that account, or allow migration with: /<provider>-account migrate auto",
+		);
+		this.name = "PermanentRebindRefused";
+		this.boundAccount = boundAccount;
+	}
 }
 
 function unblocked(accounts: readonly AccountSlot[], now: number): AccountSlot[] {
@@ -173,19 +218,32 @@ export function placeRequest(state: AccountPoolState, options: PlacementOptions)
 
 	if (state.pinned) {
 		const pinned = available.find((account) => account.name === state.pinned);
-		if (pinned) return { account: pinned, state, reusedBinding: true };
+		if (pinned) return { account: pinned, state, reusedBinding: true, placement: "pinned" };
 	}
 
 	if (mode === "spread") {
 		const cursor = state.cursor ?? 0;
 		const account = available[cursor % available.length] as AccountSlot;
-		return { account, state: { ...state, cursor: (cursor + 1) % available.length }, reusedBinding: false };
+		return {
+			account,
+			state: { ...state, cursor: (cursor + 1) % available.length },
+			reusedBinding: false,
+			placement: "spread",
+		};
 	}
 
 	const boundName = state.bindings?.[options.key];
 	if (boundName) {
 		const bound = available.find((account) => account.name === boundName);
-		if (bound) return { account: bound, state, reusedBinding: true };
+		if (bound) return { account: bound, state, reusedBinding: true, placement: "affinity-hit" };
+	}
+
+	// The bound account is unusable. Whether that is reversible decides both the
+	// placement kind and whether the migration policy gets a say.
+	const stillInPool = boundName !== undefined && state.accounts.some((candidate) => candidate.name === boundName);
+	const policy: MigrationPolicy = options.migration ?? state.migration ?? DEFAULT_MIGRATION_POLICY;
+	if (boundName !== undefined && !stillInPool && policy === "never") {
+		throw new PermanentRebindRefused(boundName);
 	}
 
 	// Cold cache: this is the only moment when moving costs nothing, so it is
@@ -200,11 +258,17 @@ export function placeRequest(state: AccountPoolState, options: PlacementOptions)
 	// block is a wall-clock window that expires. Overwriting the binding here
 	// would strand the conversation on the detour account for good, paying a
 	// fresh cache write now and forfeiting the warm one forever.
-	if (boundName && state.accounts.some((candidate) => candidate.name === boundName)) {
-		return { account, state, reusedBinding: false };
+	if (stillInPool) {
+		return { account, state, reusedBinding: false, placement: "detour" };
 	}
 
-	return { account, state: rememberBinding(state, options.key, account.name), reusedBinding: false };
+	const rebound = { account, state: rememberBinding(state, options.key, account.name), reusedBinding: false };
+	if (boundName === undefined) return { ...rebound, placement: "cold" as const };
+	return {
+		...rebound,
+		placement: "permanent-rebind" as const,
+		...(policy === "ask" ? { migratedFrom: boundName } : {}),
+	};
 }
 
 /** Drop a conversation's binding so the next request is placed afresh. */

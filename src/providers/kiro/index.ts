@@ -7,8 +7,9 @@ import {
 	unblockAccount,
 	unpinAccount,
 } from "../../core/accounts.js";
-import type { AccountPoolState } from "../../core/accounts.js";
+import type { AccountPoolState, MigrationPolicy } from "../../core/accounts.js";
 import { DEFAULT_SCHEDULING_MODE, type SchedulingMode } from "../../core/affinity.js";
+import { migrationSink } from "../../core/migration-sink.js";
 import { emptyPool, readPool, type StoredPool } from "../../core/store.js";
 import type { ProviderBuildContext, ProviderPackage } from "../../core/types.js";
 import { KIRO_AUTH_METHOD_LABELS, type KiroAuthMethod, KIRO_PROVIDER_ID } from "./config.js";
@@ -52,6 +53,7 @@ function toStored(state: AccountPoolState): StoredPool {
 	if (state.mode !== undefined) pool.mode = state.mode;
 	if (state.bindings !== undefined) pool.bindings = state.bindings;
 	if (state.cursor !== undefined) pool.cursor = state.cursor;
+	if (state.migration !== undefined) pool.migration = state.migration;
 	return pool;
 }
 
@@ -149,6 +151,7 @@ async function accountManager(agentDir: string, callbacks: LoginCallbacks): Prom
 			{ id: "unpin", label: "Clear the pin" },
 			{ id: "unblock", label: "Clear a block" },
 			{ id: "mode", label: "Scheduling mode" },
+			{ id: "migrate", label: "Migration policy" },
 		],
 	});
 
@@ -207,6 +210,18 @@ async function accountManager(agentDir: string, callbacks: LoginCallbacks): Prom
 			if (selected) state = { ...state, mode: selected as SchedulingMode };
 			break;
 		}
+		case "migrate": {
+			const selected = await callbacks.onSelect({
+				message: "When a conversation can no longer use the account holding its warm cache",
+				options: [
+					{ id: "auto", label: "Auto — move it to another account silently" },
+					{ id: "ask", label: "Ask — move it, but report the account it left" },
+					{ id: "never", label: "Never — fail the request instead of moving it" },
+				],
+			});
+			if (selected) state = { ...state, migration: selected as MigrationPolicy };
+			break;
+		}
 		default:
 			break;
 	}
@@ -229,7 +244,7 @@ export function kiroProviderPackage(deps: KiroProviderDeps = {}): ProviderPackag
 					refreshToken: async (credentials) => credentials,
 					getApiKey: (credentials) => credentials.access,
 				},
-				deps,
+				{ reportMigration: migrationSink.report, ...deps },
 			);
 		},
 		async accountUsage(context) {

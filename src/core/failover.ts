@@ -9,6 +9,13 @@ import {
 import { placeRequest, type SchedulingMode, type UsageSnapshot } from "./affinity.js";
 import { classifyFailure, type FailureClassification } from "./failure.js";
 
+export interface MigrationNotice {
+	/** The account the conversation was bound to, whose prompt cache is now lost. */
+	from: string;
+	/** The account now serving it. */
+	to: string;
+}
+
 export interface FailoverEvent {
 	from: AccountSlot;
 	to?: AccountSlot;
@@ -50,6 +57,12 @@ export interface RunWithFailoverOptions<T> {
 	usage?: UsageSnapshot;
 	maxAttempts?: number;
 	onFailover?: (event: FailoverEvent) => void;
+	/**
+	 * Called only when a conversation irreversibly leaves the account holding its
+	 * warm cache, and only under the `ask` policy. A reversible detour never
+	 * fires this, so a rate limit stays silent.
+	 */
+	onMigration?: (notice: MigrationNotice) => void;
 	onStateChange?: (state: AccountPoolState) => void;
 	now?: () => number;
 	refreshSkewMs?: number;
@@ -138,6 +151,9 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 		}
 
 		updateState(placement.state);
+		if (placement.migratedFrom !== undefined) {
+			options.onMigration?.({ from: placement.migratedFrom, to: placement.account.name });
+		}
 		let account = placement.account;
 
 		if (options.refresh && account.expires <= now() + skew) {

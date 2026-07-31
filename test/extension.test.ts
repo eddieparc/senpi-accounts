@@ -17,8 +17,13 @@ function context(): ProviderBuildContext {
 function fakePi() {
 	const registered = new Map<string, unknown>();
 	const unregistered: string[] = [];
+	const handlers = new Map<string, unknown>();
 	return {
 		events: {},
+		handlers,
+		on: vi.fn((event: string, handler: unknown) => {
+			handlers.set(event, handler);
+		}),
 		registerProvider: vi.fn((name: string, config: unknown) => {
 			registered.set(name, config);
 		}),
