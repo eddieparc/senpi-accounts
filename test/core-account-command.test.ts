@@ -110,6 +110,25 @@ describe("scheduling modes", () => {
 		// The default lives in affinity.ts; the pool simply carries no override.
 		expect(emptyPool().mode).toBeUndefined();
 	});
+
+	it("lists the effective mode instead of the unused legacy strategy", async () => {
+		const h = harness(["alpha"], { mode: "balanced", strategy: "rotate" });
+
+		const out = await runAccountCommand(h.deps as never, "list");
+
+		expect(out.text).toContain("mode: balanced");
+		expect(out.text).not.toContain("strategy:");
+	});
+
+	it("rejects the legacy strategy command with mode migration guidance", async () => {
+		const h = harness(["alpha"]);
+
+		const out = await runAccountCommand(h.deps as never, "strategy rotate");
+
+		expect(out.level).toBe("error");
+		expect(out.text).toContain("mode");
+		expect(h.state.strategy).toBeUndefined();
+	});
 });
 
 describe("remove parity", () => {

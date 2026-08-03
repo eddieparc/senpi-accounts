@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AccountSlot } from "../src/core/accounts.js";
-import { readPool, SENTINEL, updatePool, writePool } from "../src/core/store.js";
+import { deletePool, readPool, SENTINEL, updatePool, writePool, writePoolTransition } from "../src/core/store.js";
 
 const dirs: string[] = [];
 
@@ -92,5 +92,20 @@ describe("credential store", () => {
 		const next = updatePool(dir, "kiro", (state) => ({ ...state, accounts: [...state.accounts, slot("b")] }));
 		expect(next.accounts.map((account) => account.name)).toEqual(["a", "b"]);
 		expect(readPool(dir, "kiro").accounts).toHaveLength(2);
+	});
+
+	it("does not recreate a provider deleted after a request started", () => {
+		const dir = agentDir();
+		const base = { accounts: [slot("a")] };
+		writePool(dir, "kiro", base);
+		expect(deletePool(dir, "kiro")).toBe(true);
+
+		writePoolTransition(dir, "kiro", base, {
+			accounts: [{ ...slot("a"), access: "refreshed" }],
+			bindings: { "stale-conversation": "a" },
+		});
+
+		const stored = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")) as Record<string, unknown>;
+		expect(stored).not.toHaveProperty("kiro");
 	});
 });

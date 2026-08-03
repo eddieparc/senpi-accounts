@@ -1,8 +1,10 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { AccountPoolState } from "../src/core/accounts.js";
+import { conversationKeyFor } from "../src/core/affinity.js";
 import { emptyPool, readPool, writePool } from "../src/core/store.js";
 import { codexProviderPackage } from "../src/providers/codex/index.js";
 import { resolveCodexModels } from "../src/providers/codex/models.js";
@@ -78,6 +80,70 @@ describe("codex-pool provider registration", () => {
 });
 
 describe("codex-pool request routing", () => {
+	it("does not let a stale successful turn erase another turn's persisted block", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "codex-pool-concurrent-"));
+		try {
+			writePool(agentDir, "codex-pool", poolWith("alpha", "bravo"));
+			let failingAttempts = 0;
+			const failingProvider = createCodexStreamSimple(agentDir, {
+				createStream: ((_model: never, _context: never, _options: never) => {
+					failingAttempts += 1;
+					return (async function* () {
+						if (failingAttempts === 1) throw new Error("rate limit");
+						yield { type: "text_delta", delta: "recovered" };
+					})();
+				}) as never,
+			});
+			const successfulProvider = createCodexStreamSimple(agentDir, {
+				createStream: streamStub(() => {}),
+			});
+
+			const failing = failingProvider({} as never, streamContext, {
+				sessionId: "failing-turn",
+			}) as AsyncIterable<unknown>;
+			const succeeding = successfulProvider({} as never, streamContext, {
+				sessionId: "successful-turn",
+			}) as AsyncIterable<unknown>;
+
+			for await (const _event of failing) {
+				/* drain */
+			}
+			expect(failingAttempts).toBe(2);
+			for await (const _event of succeeding) {
+				/* drain */
+			}
+
+			expect(readPool(agentDir, "codex-pool").accounts.some((account) => account.blockReason === "rate_limit")).toBe(
+				true,
+			);
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("binds auxiliary traffic to affinitySessionId instead of its request id", async () => {
+		let saved: AccountPoolState = poolWith("alpha", "bravo");
+		const stream = createCodexStreamSimple("/tmp/x", {
+			readPoolState: () => saved,
+			writePoolState: (_dir, _id, state) => {
+				saved = state;
+			},
+			createStream: streamStub(() => {}),
+		});
+
+		for await (const _ of stream({} as never, streamContext, {
+			sessionId: "compaction-request",
+			affinitySessionId: "conversation-session",
+		} as never) as AsyncIterable<unknown>) {
+			// drain
+		}
+
+		const affinityKey = conversationKeyFor({ sessionId: "conversation-session" });
+		const auxiliaryKey = conversationKeyFor({ sessionId: "compaction-request" });
+		expect(saved.bindings?.[affinityKey]).toBeDefined();
+		expect(saved.bindings?.[auxiliaryKey]).toBeUndefined();
+	});
+
 	it("injects the selected account's token and account id", async () => {
 		const seen: Record<string, unknown>[] = [];
 		const stream = createCodexStreamSimple("/tmp/x", {

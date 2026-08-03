@@ -46,6 +46,7 @@ export class AllAccountsBlockedError extends Error {
 		if (retryAt !== undefined) {
 			this.retryAt = retryAt;
 			this.retryAfterMs = Math.max(0, retryAt - now);
+			this.message = `${message}; retry-after-ms: ${this.retryAfterMs}`;
 		}
 	}
 }
@@ -125,6 +126,11 @@ function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function describeBlockedFailure(accounts: readonly AccountSlot[], now: number, lastError?: unknown): string {
+	const pool = describeBlockedPool(accounts, now);
+	return lastError === undefined ? pool : `${pool}; last error: ${errorText(lastError)}`;
+}
+
 function place(state: AccountPoolState, options: RunWithFailoverOptions<unknown>, now: number) {
 	const placement: Parameters<typeof placeRequest>[1] = { key: options.key, now };
 	if (options.mode !== undefined) placement.mode = options.mode;
@@ -151,7 +157,7 @@ export function applyAccountFailure(
 
 	// The streak persists on the slot, so a pool that keeps failing backs off
 	// further each time instead of restarting at the base window on every request.
-	const streaked = recordFailureStreak(account);
+	const streaked = recordFailureStreak(account, now);
 	const blockOptions: Parameters<typeof blockAccount>[2] = {
 		now,
 		attempt: Math.max(attempt, (streaked.consecutiveFailures ?? 1) - 1),
@@ -197,8 +203,11 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 			placement = place(state, options as RunWithFailoverOptions<unknown>, now());
 		} catch (error) {
 			if (error instanceof NoAvailableAccountError) {
-				if (lastError !== undefined) throw lastError;
-				throw new AllAccountsBlockedError(describeBlockedPool(state.accounts, now()), error.retryAt, now());
+				throw new AllAccountsBlockedError(
+					describeBlockedFailure(state.accounts, now(), lastError),
+					error.retryAt,
+					now(),
+				);
 			}
 			throw error;
 		}
@@ -311,5 +320,21 @@ export async function runWithFailover<T>(options: RunWithFailoverOptions<T>): Pr
 		}
 	}
 
-	throw lastError ?? new AllAccountsBlockedError(describeBlockedPool(state.accounts, now()), undefined, now());
+	const finalNow = now();
+	if (lastError !== undefined) {
+		try {
+			place(state, options, finalNow);
+		} catch (error) {
+			if (error instanceof NoAvailableAccountError) {
+				throw new AllAccountsBlockedError(
+					describeBlockedFailure(state.accounts, finalNow, lastError),
+					error.retryAt,
+					finalNow,
+				);
+			}
+			throw error;
+		}
+		throw lastError;
+	}
+	throw new AllAccountsBlockedError(describeBlockedPool(state.accounts, finalNow), undefined, finalNow);
 }

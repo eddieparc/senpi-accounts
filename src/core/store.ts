@@ -158,6 +158,101 @@ export function writePoolIfCurrent(
 	});
 }
 
+function sameJson(left: unknown, right: unknown): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function mergeObjectTransition<T extends object>(base: T, next: T, current: T): T {
+	const merged = { ...current } as Record<string, unknown>;
+	const baseRecord = base as Record<string, unknown>;
+	const nextRecord = next as Record<string, unknown>;
+	for (const key of new Set([...Object.keys(baseRecord), ...Object.keys(nextRecord)])) {
+		if (sameJson(baseRecord[key], nextRecord[key])) continue;
+		if (Object.hasOwn(nextRecord, key)) {
+			merged[key] = nextRecord[key];
+		} else {
+			delete merged[key];
+		}
+	}
+	return merged as T;
+}
+
+function mergeAccountTransition(
+	base: readonly AccountSlot[],
+	next: readonly AccountSlot[],
+	current: readonly AccountSlot[],
+): AccountSlot[] {
+	const baseByName = new Map(base.map((slot) => [slot.name, slot]));
+	const nextByName = new Map(next.map((slot) => [slot.name, slot]));
+	const mergedByName = new Map(current.map((slot) => [slot.name, slot]));
+
+	for (const [name, baseSlot] of baseByName) {
+		const nextSlot = nextByName.get(name);
+		if (nextSlot === undefined) {
+			mergedByName.delete(name);
+			continue;
+		}
+		const currentSlot = mergedByName.get(name);
+		if (currentSlot !== undefined) {
+			mergedByName.set(name, mergeObjectTransition(baseSlot, nextSlot, currentSlot));
+		}
+		// A slot removed after this request started must not be resurrected.
+	}
+
+	for (const nextSlot of next) {
+		if (!baseByName.has(nextSlot.name) && !mergedByName.has(nextSlot.name)) {
+			mergedByName.set(nextSlot.name, nextSlot);
+		}
+	}
+	return [...mergedByName.values()];
+}
+
+/**
+ * Apply only the fields changed by one request to the latest persisted pool.
+ *
+ * Each stream starts from `base`, but another stream may persist a block,
+ * binding, logout or token refresh before this stream finishes. Replacing the
+ * whole pool with `next` would erase that concurrent transition.
+ */
+export function mergePoolTransition(
+	base: AccountPoolState,
+	next: AccountPoolState,
+	current: AccountPoolState,
+): AccountPoolState {
+	const merged = mergeObjectTransition(base, next, current);
+	merged.accounts = mergeAccountTransition(base.accounts, next.accounts, current.accounts);
+	if (!sameJson(base.bindings, next.bindings)) {
+		const bindings = mergeObjectTransition(base.bindings ?? {}, next.bindings ?? {}, current.bindings ?? {});
+		if (Object.keys(bindings).length > 0) merged.bindings = bindings;
+		else delete merged.bindings;
+	} else if (current.bindings !== undefined) {
+		merged.bindings = current.bindings;
+	}
+	return merged;
+}
+
+/** Persist one request's transition without replacing concurrent pool changes. */
+export function writePoolTransition(
+	agentDir: string,
+	providerId: string,
+	base: AccountPoolState,
+	next: AccountPoolState,
+): AccountPoolState {
+	return withAuthLock(agentDir, () => {
+		const data = readAuthFile(agentDir);
+		const entry = data[providerId];
+		if (!isStoredPool(entry)) return { accounts: [] };
+
+		const current = toPoolState(entry);
+		const merged = mergePoolTransition(base, next, current);
+		if (!sameJson(current, merged)) {
+			data[providerId] = toStoredPool(merged);
+			writeAuthFile(agentDir, data);
+		}
+		return merged;
+	});
+}
+
 /** Read-modify-write a pool in one step. */
 export function updatePool(
 	agentDir: string,

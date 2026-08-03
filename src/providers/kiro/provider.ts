@@ -2,7 +2,7 @@ import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOpti
 import type { AccountPoolState, AccountSlot } from "../../core/accounts.js";
 import { conversationKeyFor } from "../../core/affinity.js";
 import { applyAccountFailure, type MigrationNotice, runWithFailover } from "../../core/failover.js";
-import { readPool, writePool, writePoolIfCurrent } from "../../core/store.js";
+import { readPool, writePool, writePoolTransition } from "../../core/store.js";
 import { createUsageCache, type UsageCache } from "../../core/usage-cache.js";
 import type { ProviderBuildContext, ProviderConfig } from "../../core/types.js";
 import {
@@ -27,6 +27,7 @@ import { createKiroStream } from "./vendor/kiro.js";
  */
 
 const PROFILE_ARN_HEADER = "x-kiro-profile-arn";
+const KIRO_USAGE_TOKEN_REFRESH_SKEW_MS = 60_000;
 
 export function slotToTokens(slot: AccountSlot): KiroTokens {
 	const meta = (slot.meta ?? {}) as Partial<KiroTokens>;
@@ -182,7 +183,7 @@ export async function readKiroHeadroom(
 ): Promise<number | undefined> {
 	const refreshTokens = deps.refresh ?? refreshKiro;
 	let tokens = slotToTokens(slot);
-	if (Date.now() >= slot.expires) {
+	if (Date.now() + KIRO_USAGE_TOKEN_REFRESH_SKEW_MS >= slot.expires) {
 		try {
 			tokens = await refreshTokens(tokens);
 		} catch {
@@ -226,18 +227,15 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 		// Read per request so a login or pin made elsewhere takes effect on the
 		// very next turn.
 		const state = readState(agentDir, KIRO_PROVIDER_ID);
-		let persistedState = state;
-		const writeState = deps.writePoolState
+		const persistState = deps.writePoolState
 			? (next: AccountPoolState) => deps.writePoolState?.(agentDir, KIRO_PROVIDER_ID, next)
-			: (next: AccountPoolState) => {
-					if (writePoolIfCurrent(agentDir, KIRO_PROVIDER_ID, persistedState, next)) persistedState = next;
-				};
+			: (next: AccountPoolState) => writePoolTransition(agentDir, KIRO_PROVIDER_ID, state, next);
 		// senpi's session id is stable for the whole session; the first user message
 		// is not — compaction replaces it with the summary, which silently changed
 		// the key mid-conversation and threw away the warm binding. Anchor on the
 		// session id, keep content hashing as the fallback.
 		const key = conversationKeyFor({
-			sessionId: options?.sessionId,
+			sessionId: options?.affinitySessionId ?? options?.sessionId,
 			firstUserMessage: firstUserText(context),
 		});
 
@@ -259,7 +257,7 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 					);
 				},
 				onMigration: (notice) => deps.reportMigration?.(KIRO_PROVIDER_ID, notice),
-				onStateChange: writeState,
+				onStateChange: persistState,
 				attempt: async (account) => {
 					const tokens = slotToTokens(account);
 					const headers = { ...options?.headers };
@@ -279,7 +277,7 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 			} catch (error) {
 				const transition = applyAccountFailure(result.state, result.account, key, error);
 				if (transition.classification.failover && transition.classification.block !== undefined) {
-					writeState(transition.state);
+					persistState(transition.state);
 					deps.onFailover?.(
 						`kiro: account '${result.account.name}' failed (${transition.classification.block}: ` +
 							`${error instanceof Error ? error.message : String(error)}; output already streamed; not retrying)`,

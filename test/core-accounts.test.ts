@@ -11,6 +11,7 @@ import {
 	MAX_BLOCK_MS,
 	NoAvailableAccountError,
 	pinAccount,
+	recordFailureStreak,
 	removeAccount,
 	selectAccount,
 	unblockAccount,
@@ -117,6 +118,31 @@ describe("blocking and failback", () => {
 		expect(cleared[0]?.blockReason).toBeUndefined();
 		expect(cleared[1]?.blockReason).toBe("rate_limit");
 		expect(cleared[2]?.blockReason).toBe("auth_error");
+	});
+
+	it("forgets a stale failure streak after one day without another failure", () => {
+		const recordAt = recordFailureStreak as (account: AccountSlot, now: number) => AccountSlot;
+		const stale = {
+			...slot("a"),
+			consecutiveFailures: 5,
+			lastFailureAt: 0,
+		} as AccountSlot;
+
+		const next = recordAt(stale, 24 * 60 * 60 * 1_000 + 1);
+
+		expect(next.consecutiveFailures).toBe(1);
+	});
+
+	it("manual unblock clears the remembered failure streak", () => {
+		const reset = unblockAccount(
+			slot("a", {
+				blockedUntil: 10_000,
+				blockReason: "rate_limit",
+				consecutiveFailures: 6,
+			}),
+		);
+
+		expect(reset.consecutiveFailures).toBeUndefined();
 	});
 });
 
