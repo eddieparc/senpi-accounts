@@ -157,7 +157,7 @@ export function applyAccountFailure(
 
 	// The streak persists on the slot, so a pool that keeps failing backs off
 	// further each time instead of restarting at the base window on every request.
-	const streaked = recordFailureStreak(account);
+	const streaked = recordFailureStreak(account, now);
 	const blockOptions: Parameters<typeof blockAccount>[2] = {
 		now,
 		attempt: Math.max(attempt, (streaked.consecutiveFailures ?? 1) - 1),

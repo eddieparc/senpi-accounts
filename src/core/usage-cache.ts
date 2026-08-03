@@ -49,10 +49,12 @@ export function createUsageCache(
 
 	let snapshot: UsageSnapshot | undefined;
 	let fetchedAt = 0;
+	let attemptedAt = Number.NEGATIVE_INFINITY;
 	let inFlight: Promise<UsageSnapshot | undefined> | undefined;
 
 	const load = (): Promise<UsageSnapshot | undefined> => {
 		if (inFlight) return inFlight;
+		attemptedAt = now();
 		const deadline = new Promise<undefined>((resolve) => {
 			const timer = setTimeout(() => resolve(undefined), timeout);
 			// Never hold the process open for a quota refresh.
@@ -77,7 +79,7 @@ export function createUsageCache(
 
 	return {
 		get(): UsageSnapshot | undefined {
-			if (snapshot === undefined || now() - fetchedAt >= ttl) {
+			if (now() - Math.max(fetchedAt, attemptedAt) >= ttl) {
 				// Kick off a refresh but do not wait: the current (possibly stale or
 				// absent) snapshot is good enough to place this request.
 				void load();

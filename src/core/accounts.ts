@@ -32,6 +32,8 @@ export interface AccountSlot {
 	 * base window every time. Cleared by {@link clearFailureStreak}.
 	 */
 	consecutiveFailures?: number;
+	/** Epoch millis of the most recent counted failure, for streak decay. */
+	lastFailureAt?: number;
 }
 
 export type SelectionStrategy = "fill-first" | "rotate";
@@ -64,6 +66,7 @@ export interface AccountPoolState {
 
 export const MAX_BLOCK_MS = 48 * 60 * 60 * 1_000;
 export const DEFAULT_BLOCK_MS = 60_000;
+export const FAILURE_STREAK_DECAY_MS = 24 * 60 * 60 * 1_000;
 
 const ACCOUNT_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/;
 
@@ -153,20 +156,31 @@ export function blockAccount(
 }
 
 /** Count one more block against a slot, so the next backoff is longer. */
-export function recordFailureStreak(account: AccountSlot): AccountSlot {
-	return { ...account, consecutiveFailures: (account.consecutiveFailures ?? 0) + 1 };
+export function recordFailureStreak(account: AccountSlot, now = Date.now()): AccountSlot {
+	const stale = account.lastFailureAt !== undefined && now - account.lastFailureAt > FAILURE_STREAK_DECAY_MS;
+	return {
+		...account,
+		consecutiveFailures: stale ? 1 : (account.consecutiveFailures ?? 0) + 1,
+		lastFailureAt: now,
+	};
 }
 
 /** Forget the streak after a request succeeds on this slot. */
 export function clearFailureStreak(account: AccountSlot): AccountSlot {
-	if (account.consecutiveFailures === undefined) return account;
-	const { consecutiveFailures: _consecutiveFailures, ...rest } = account;
+	if (account.consecutiveFailures === undefined && account.lastFailureAt === undefined) return account;
+	const { consecutiveFailures: _consecutiveFailures, lastFailureAt: _lastFailureAt, ...rest } = account;
 	return rest;
 }
 
 /** Clear an `auth_error` block, e.g. after a successful re-login. */
 export function unblockAccount(account: AccountSlot): AccountSlot {
-	const { blockedUntil: _blockedUntil, blockReason: _blockReason, ...available } = account;
+	const {
+		blockedUntil: _blockedUntil,
+		blockReason: _blockReason,
+		consecutiveFailures: _consecutiveFailures,
+		lastFailureAt: _lastFailureAt,
+		...available
+	} = account;
 	return available;
 }
 

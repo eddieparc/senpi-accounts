@@ -1,8 +1,8 @@
 import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import type { AccountSlot } from "../../core/accounts.js";
+import type { AccountPoolState, AccountSlot } from "../../core/accounts.js";
 import { conversationKeyFor } from "../../core/affinity.js";
 import { type MigrationNotice, runWithFailover } from "../../core/failover.js";
-import { readPool, writePool } from "../../core/store.js";
+import { readPool, writePool, writePoolTransition } from "../../core/store.js";
 import { type CodexTokens, refreshCodex } from "./oauth.js";
 
 /**
@@ -135,6 +135,9 @@ export function createCodexStreamSimple(agentDir: string, deps: CodexStreamDeps 
 		// Read per request so a login, pin, or block made elsewhere takes effect
 		// on the very next turn.
 		const state = readState(agentDir, CODEX_POOL_PROVIDER_ID);
+		const persistState = deps.writePoolState
+			? undefined
+			: (next: AccountPoolState) => writePoolTransition(agentDir, CODEX_POOL_PROVIDER_ID, state, next);
 		const key = conversationKeyFor({
 			sessionId: options?.affinitySessionId ?? options?.sessionId,
 			firstUserMessage: firstUserText(context),
@@ -144,6 +147,7 @@ export function createCodexStreamSimple(agentDir: string, deps: CodexStreamDeps 
 			const result = await runWithFailover({
 				state,
 				key,
+				onStateChange: persistState,
 				refresh: async (account) => {
 					const refreshed = await refreshTokens(slotToCodexTokens(account));
 					return codexTokensToSlot(account.name, refreshed, account.source);
@@ -172,7 +176,7 @@ export function createCodexStreamSimple(agentDir: string, deps: CodexStreamDeps 
 				},
 			});
 
-			writeState(agentDir, CODEX_POOL_PROVIDER_ID, result.state);
+			if (deps.writePoolState) writeState(agentDir, CODEX_POOL_PROVIDER_ID, result.state);
 			for (const event of result.value) yield event;
 		})();
 

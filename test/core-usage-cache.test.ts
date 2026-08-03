@@ -72,6 +72,23 @@ describe("usage cache", () => {
 		expect(await cache.refresh()).toBeUndefined();
 	});
 
+	it("backs off automatic refreshes after a failed fetch", async () => {
+		let clock = 1_000;
+		const fetchUsage = vi.fn(async () => {
+			throw new Error("HTTP 503");
+		});
+		const cache = createUsageCache(fetchUsage, { ttlMs: 30_000, now: () => clock });
+
+		await cache.refresh();
+		cache.get();
+		cache.get();
+		expect(fetchUsage).toHaveBeenCalledTimes(1);
+
+		clock += 30_001;
+		cache.get();
+		expect(fetchUsage).toHaveBeenCalledTimes(2);
+	});
+
 	it("collapses concurrent refreshes into one fetch", async () => {
 		const fetchUsage = vi.fn(async () => ({ a: 0.5 }));
 		const cache = createUsageCache(fetchUsage);

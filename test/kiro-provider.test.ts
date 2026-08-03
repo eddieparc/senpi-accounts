@@ -1,7 +1,12 @@
+import { mkdtempSync, rmSync } from "node:fs";
 import type { Api, AssistantMessageEventStream, Context, Model } from "@earendil-works/pi-ai";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AccountPoolState } from "../src/core/accounts.js";
-import { createKiroStreamSimple } from "../src/providers/kiro/provider.js";
+import { readPool, writePool } from "../src/core/store.js";
+import type { KiroTokens } from "../src/providers/kiro/oauth.js";
+import { createKiroStreamSimple, readKiroHeadroom } from "../src/providers/kiro/provider.js";
 
 function pool(names = ["primary"]): AccountPoolState {
 	return {
@@ -36,7 +41,82 @@ function context(): Context {
 	};
 }
 
+describe("Kiro usage token refresh", () => {
+	it("refreshes a token that will expire during the usage request", async () => {
+		const now = 1_000_000;
+		const refresh = vi.fn(async (tokens: KiroTokens) => ({
+			...tokens,
+			access: "fresh-access",
+			expires: now + 3_600_000,
+		}));
+		vi.spyOn(Date, "now").mockReturnValue(now);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({
+				ok: true,
+				status: 200,
+				json: async () => ({
+					usageBreakdownList: [{ resourceType: "CREDIT", currentUsage: 25, usageLimit: 100 }],
+				}),
+			})),
+		);
+
+		try {
+			const account = { ...pool().accounts[0]!, expires: now + 30_000 };
+			expect(await readKiroHeadroom(account, { refresh })).toBe(0.75);
+			expect(refresh).toHaveBeenCalledOnce();
+		} finally {
+			vi.restoreAllMocks();
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
 describe("Kiro provider streaming", () => {
+	it("does not let a stale successful turn erase another turn's persisted block", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "senpi-accounts-concurrent-"));
+		try {
+			writePool(agentDir, "kiro", pool());
+			const common = { usage: { get: () => undefined, refresh: async () => ({}) } };
+			const failingProvider = createKiroStreamSimple(agentDir, {
+				...common,
+				createStream: (() => () =>
+					(async function* () {
+						yield { type: "error", error: { errorMessage: "HTTP 429: rate limited" } };
+					})() as unknown as AssistantMessageEventStream) as never,
+			});
+			const successfulProvider = createKiroStreamSimple(agentDir, {
+				...common,
+				createStream: (() => () =>
+					(async function* () {
+						yield { type: "text_delta", delta: "ok" };
+					})() as unknown as AssistantMessageEventStream) as never,
+			});
+
+			const failing = failingProvider(model(), context(), { sessionId: "failing-turn" }) as unknown as AsyncIterable<
+				Record<string, unknown>
+			>;
+			const succeeding = successfulProvider(model(), context(), {
+				sessionId: "successful-turn",
+			}) as unknown as AsyncIterable<Record<string, unknown>>;
+
+			await expect(
+				(async () => {
+					for await (const _event of failing) {
+						/* drain */
+					}
+				})(),
+			).rejects.toThrow("HTTP 429");
+			for await (const _event of succeeding) {
+				/* drain */
+			}
+
+			expect(readPool(agentDir, "kiro").accounts[0]?.blockReason).toBe("rate_limit");
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
 	it("does not pull upstream past the first visible delta before yielding it", async () => {
 		let pulls = 0;
 		const upstream: AsyncIterable<Record<string, unknown>> = {
