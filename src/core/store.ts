@@ -1,5 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { lockSync } from "proper-lockfile";
 import type { AccountPoolState, AccountSlot, SelectionStrategy } from "./accounts.js";
 
 /**
@@ -71,6 +73,17 @@ function writeAuthFile(agentDir: string, data: Record<string, unknown>): void {
 	chmodSync(path, 0o600);
 }
 
+function withAuthLock<T>(agentDir: string, operation: () => T): T {
+	const path = authPath(agentDir);
+	mkdirSync(dirname(path), { recursive: true });
+	const release = lockSync(path, { realpath: false });
+	try {
+		return operation();
+	} finally {
+		release();
+	}
+}
+
 function toPoolState(stored: StoredPool): AccountPoolState {
 	const state: AccountPoolState = { accounts: stored.accounts ?? [] };
 	if (stored.pinned !== undefined) state.pinned = stored.pinned;
@@ -80,6 +93,17 @@ function toPoolState(stored: StoredPool): AccountPoolState {
 	if (stored.bindings !== undefined) state.bindings = stored.bindings;
 	if (stored.migration !== undefined) state.migration = stored.migration;
 	return state;
+}
+
+function toStoredPool(state: AccountPoolState): StoredPool {
+	const stored: StoredPool = { type: "oauth", ...SENTINEL, accounts: state.accounts };
+	if (state.pinned !== undefined) stored.pinned = state.pinned;
+	if (state.strategy !== undefined) stored.strategy = state.strategy;
+	if (state.cursor !== undefined) stored.cursor = state.cursor;
+	if (state.mode !== undefined) stored.mode = state.mode;
+	if (state.bindings !== undefined) stored.bindings = state.bindings;
+	if (state.migration !== undefined) stored.migration = state.migration;
+	return stored;
 }
 
 function isStoredPool(value: unknown): value is StoredPool {
@@ -94,16 +118,44 @@ export function readPool(agentDir: string, providerId: string): AccountPoolState
 
 /** Persist a provider's account pool, leaving every other provider untouched. */
 export function writePool(agentDir: string, providerId: string, state: AccountPoolState): void {
-	const data = readAuthFile(agentDir);
-	const stored: StoredPool = { type: "oauth", ...SENTINEL, accounts: state.accounts };
-	if (state.pinned !== undefined) stored.pinned = state.pinned;
-	if (state.strategy !== undefined) stored.strategy = state.strategy;
-	if (state.cursor !== undefined) stored.cursor = state.cursor;
-	if (state.mode !== undefined) stored.mode = state.mode;
-	if (state.bindings !== undefined) stored.bindings = state.bindings;
-	if (state.migration !== undefined) stored.migration = state.migration;
-	data[providerId] = stored;
-	writeAuthFile(agentDir, data);
+	withAuthLock(agentDir, () => {
+		const data = readAuthFile(agentDir);
+		data[providerId] = toStoredPool(state);
+		writeAuthFile(agentDir, data);
+	});
+}
+
+/** Delete a provider credential while preserving every adjacent provider. */
+export function deletePool(agentDir: string, providerId: string): boolean {
+	return withAuthLock(agentDir, () => {
+		const data = readAuthFile(agentDir);
+		if (!(providerId in data)) return false;
+		delete data[providerId];
+		writeAuthFile(agentDir, data);
+		return true;
+	});
+}
+
+/**
+ * Persist state only while the credential still matches the request's baseline.
+ *
+ * A logout or account edit in another process changes that baseline. The stale
+ * request must then lose instead of recreating removed credentials.
+ */
+export function writePoolIfCurrent(
+	agentDir: string,
+	providerId: string,
+	expected: AccountPoolState,
+	next: AccountPoolState,
+): boolean {
+	return withAuthLock(agentDir, () => {
+		const data = readAuthFile(agentDir);
+		const entry = data[providerId];
+		if (!isStoredPool(entry) || !isDeepStrictEqual(toPoolState(entry), expected)) return false;
+		data[providerId] = toStoredPool(next);
+		writeAuthFile(agentDir, data);
+		return true;
+	});
 }
 
 /** Read-modify-write a pool in one step. */
@@ -112,7 +164,12 @@ export function updatePool(
 	providerId: string,
 	update: (state: AccountPoolState) => AccountPoolState,
 ): AccountPoolState {
-	const next = update(readPool(agentDir, providerId));
-	writePool(agentDir, providerId, next);
-	return next;
+	return withAuthLock(agentDir, () => {
+		const data = readAuthFile(agentDir);
+		const entry = data[providerId];
+		const next = update(isStoredPool(entry) ? toPoolState(entry) : { accounts: [] });
+		data[providerId] = toStoredPool(next);
+		writeAuthFile(agentDir, data);
+		return next;
+	});
 }

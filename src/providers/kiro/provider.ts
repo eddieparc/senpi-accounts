@@ -1,8 +1,8 @@
 import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
-import type { AccountSlot } from "../../core/accounts.js";
+import type { AccountPoolState, AccountSlot } from "../../core/accounts.js";
 import { conversationKeyFor } from "../../core/affinity.js";
 import { applyAccountFailure, type MigrationNotice, runWithFailover } from "../../core/failover.js";
-import { readPool, writePool } from "../../core/store.js";
+import { readPool, writePool, writePoolIfCurrent } from "../../core/store.js";
 import { createUsageCache, type UsageCache } from "../../core/usage-cache.js";
 import type { ProviderBuildContext, ProviderConfig } from "../../core/types.js";
 import {
@@ -217,7 +217,6 @@ function kiroUsageCache(
 
 export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps = {}) {
 	const readState = deps.readPoolState ?? readPool;
-	const writeState = deps.writePoolState ?? writePool;
 	const refreshTokens = deps.refresh ?? refreshKiro;
 	const makeStream = deps.createStream ?? createKiroStream;
 	// One cache per provider instance, so the TTL is shared across requests.
@@ -227,6 +226,12 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 		// Read per request so a login or pin made elsewhere takes effect on the
 		// very next turn.
 		const state = readState(agentDir, KIRO_PROVIDER_ID);
+		let persistedState = state;
+		const writeState = deps.writePoolState
+			? (next: AccountPoolState) => deps.writePoolState?.(agentDir, KIRO_PROVIDER_ID, next)
+			: (next: AccountPoolState) => {
+					if (writePoolIfCurrent(agentDir, KIRO_PROVIDER_ID, persistedState, next)) persistedState = next;
+				};
 		// senpi's session id is stable for the whole session; the first user message
 		// is not — compaction replaces it with the summary, which silently changed
 		// the key mid-conversation and threw away the warm binding. Anchor on the
@@ -254,7 +259,7 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 					);
 				},
 				onMigration: (notice) => deps.reportMigration?.(KIRO_PROVIDER_ID, notice),
-				onStateChange: (next) => writeState(agentDir, KIRO_PROVIDER_ID, next),
+				onStateChange: writeState,
 				attempt: async (account) => {
 					const tokens = slotToTokens(account);
 					const headers = { ...options?.headers };
@@ -274,7 +279,7 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 			} catch (error) {
 				const transition = applyAccountFailure(result.state, result.account, key, error);
 				if (transition.classification.failover && transition.classification.block !== undefined) {
-					writeState(agentDir, KIRO_PROVIDER_ID, transition.state);
+					writeState(transition.state);
 					deps.onFailover?.(
 						`kiro: account '${result.account.name}' failed (${transition.classification.block}: ` +
 							`${error instanceof Error ? error.message : String(error)}; output already streamed; not retrying)`,
