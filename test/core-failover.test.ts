@@ -190,6 +190,23 @@ describe("failover", () => {
 });
 
 describe("senpi cooldown alignment", () => {
+	it("surfaces the exact pool retry window on the request that exhausts the pool", async () => {
+		const state: AccountPoolState = { accounts: [slot("a"), slot("b")] };
+
+		const error = await runWithFailover({
+			state,
+			key: KEY,
+			now: () => 1_000,
+			attempt: async () => {
+				throw new Error("rate limit");
+			},
+		}).catch((caught: unknown) => caught);
+
+		expect(error).toBeInstanceOf(AllAccountsBlockedError);
+		expect((error as AllAccountsBlockedError).retryAfterMs).toBe(60_000);
+		expect((error as Error).message).toContain("retry-after-ms: 60000");
+	});
+
 	it("carries retryAfterMs so senpi suppresses the model for exactly as long as the pool is down", async () => {
 		const state: AccountPoolState = {
 			accounts: [

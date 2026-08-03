@@ -136,7 +136,7 @@ export function createCodexStreamSimple(agentDir: string, deps: CodexStreamDeps 
 		// on the very next turn.
 		const state = readState(agentDir, CODEX_POOL_PROVIDER_ID);
 		const key = conversationKeyFor({
-			sessionId: options?.sessionId,
+			sessionId: options?.affinitySessionId ?? options?.sessionId,
 			firstUserMessage: firstUserText(context),
 		});
 

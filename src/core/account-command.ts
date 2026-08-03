@@ -9,7 +9,6 @@ import {
 	type MigrationPolicy,
 	pinAccount,
 	removeAccount,
-	type SelectionStrategy,
 	unblockAccount,
 	unpinAccount,
 } from "./accounts.js";
@@ -67,11 +66,11 @@ function listOutput(providerId: string, state: AccountPoolState, now: number): C
 		};
 	}
 
-	const strategy = state.strategy ?? "fill-first";
+	const mode = state.mode ?? "cache-first";
 	const available = state.accounts.filter((slot) => !isBlocked(slot, now)).length;
 	const migration = state.migration ?? DEFAULT_MIGRATION_POLICY;
 	const lines = [
-		`${providerId} accounts (${available}/${state.accounts.length} available, strategy: ${strategy}, ` +
+		`${providerId} accounts (${available}/${state.accounts.length} available, mode: ${mode}, ` +
 			`migration: ${migration}):`,
 		...state.accounts.map((slot) => formatSlot(slot, state, now)),
 	];
@@ -81,7 +80,7 @@ function listOutput(providerId: string, state: AccountPoolState, now: number): C
 const USAGE =
 	"add <name> | remove <name> | logout [all] | pin <name> | unpin | " +
 	"mode <cache-first|balanced|spread> | migrate <auto|ask|never> | " +
-	"strategy <fill-first|rotate> | unblock <name> | list";
+	"unblock <name> | list";
 
 const SCHEDULING_MODES: SchedulingMode[] = ["cache-first", "balanced", "spread"];
 
@@ -155,8 +154,7 @@ export async function runAccountCommand(deps: AccountCommandDeps, rawArgs: strin
 
 			// Scheduling mode decides *where* a request lands: cache-first keeps a
 			// conversation on one account for prompt-cache hits, balanced evens out
-			// usage, spread avoids herding. `strategy` below is the older
-			// fill-first/rotate knob and is kept for compatibility.
+			// usage, spread avoids herding.
 			case "mode": {
 				if (!target || !SCHEDULING_MODES.includes(target as SchedulingMode)) {
 					return {
@@ -197,14 +195,12 @@ export async function runAccountCommand(deps: AccountCommandDeps, rawArgs: strin
 				return { text: `Unpinned ${deps.providerId} account.`, level: "info" };
 
 			case "strategy": {
-				if (target !== "fill-first" && target !== "rotate") {
-					return {
-						text: `Usage: /${deps.providerId}-account strategy <fill-first|rotate>`,
-						level: "error",
-					};
-				}
-				write(deps.agentDir, deps.providerId, { ...state, strategy: target as SelectionStrategy });
-				return { text: `${deps.providerId} selection strategy set to ${target}.`, level: "info" };
+				return {
+					text:
+						`/${deps.providerId}-account strategy is no longer used; ` +
+						`use mode <${SCHEDULING_MODES.join("|")}>.`,
+					level: "error",
+				};
 			}
 
 			case "unblock": {

@@ -237,7 +237,7 @@ export function createKiroStreamSimple(agentDir: string, deps: KiroProviderDeps 
 		// the key mid-conversation and threw away the warm binding. Anchor on the
 		// session id, keep content hashing as the fallback.
 		const key = conversationKeyFor({
-			sessionId: options?.sessionId,
+			sessionId: options?.affinitySessionId ?? options?.sessionId,
 			firstUserMessage: firstUserText(context),
 		});
 

@@ -63,6 +63,30 @@ async function drive(state: AccountPoolState, onMigration: (providerId: string, 
 	return { used, state: saved };
 }
 
+async function driveCompaction(state: AccountPoolState) {
+	let saved = state;
+	const streamSimple = createKiroStreamSimple("/tmp/senpi-accounts-wiring", {
+		readPoolState: () => saved,
+		writePoolState: (_dir, _id, next) => {
+			saved = next;
+		},
+		usage: { get: () => undefined, refresh: async () => ({}) },
+		createStream: ((_config: unknown, _runtime: unknown, _logger: unknown) =>
+			(_m: unknown, _c: unknown, _opts: unknown) =>
+				(async function* () {
+					yield { type: "text_delta", delta: "ok" };
+				})()) as never,
+	});
+	const iterable = streamSimple(model(), context(), {
+		sessionId: "compaction-request",
+		affinitySessionId: SESSION,
+	} as never) as unknown as AsyncIterable<unknown>;
+	for await (const _event of iterable) {
+		/* drain */
+	}
+	return saved;
+}
+
 describe("the Kiro provider reports a permanent rebind through the sink", () => {
 	const key = conversationKeyFor({ sessionId: SESSION });
 
@@ -99,5 +123,16 @@ describe("the Kiro provider reports a permanent rebind through the sink", () => 
 		expect(failure).toBeInstanceOf(Error);
 		expect((failure as Error).message).toContain(home);
 		expect(report).not.toHaveBeenCalled();
+	});
+});
+
+describe("the Kiro provider preserves affinity across auxiliary calls", () => {
+	it("binds compaction traffic to affinitySessionId instead of its request id", async () => {
+		const state = await driveCompaction(pool(["acc-a", "acc-b"]));
+		const affinityKey = conversationKeyFor({ sessionId: SESSION });
+		const auxiliaryKey = conversationKeyFor({ sessionId: "compaction-request" });
+
+		expect(state.bindings?.[affinityKey]).toBeDefined();
+		expect(state.bindings?.[auxiliaryKey]).toBeUndefined();
 	});
 });
