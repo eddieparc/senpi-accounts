@@ -10,7 +10,7 @@ import {
 import type { AccountPoolState, MigrationPolicy } from "../../core/accounts.js";
 import { DEFAULT_SCHEDULING_MODE, type SchedulingMode } from "../../core/affinity.js";
 import { migrationSink } from "../../core/migration-sink.js";
-import { emptyPool, readPool, type StoredPool } from "../../core/store.js";
+import { deletePool, emptyPool, readPool, type StoredPool } from "../../core/store.js";
 import type { ProviderBuildContext, ProviderPackage } from "../../core/types.js";
 import { KIRO_AUTH_METHOD_LABELS, type KiroAuthMethod, KIRO_PROVIDER_ID } from "./config.js";
 import { fetchKiroUsage, type KiroTokens, loginKiro } from "./oauth.js";
@@ -161,7 +161,13 @@ async function accountManager(agentDir: string, callbacks: LoginCallbacks): Prom
 			break;
 		case "remove": {
 			const target = await pickAccount(state, callbacks, "Log out of which account?");
-			if (target) state = removeAccount(state, target);
+			if (target) {
+				state = removeAccount(state, target);
+				if (state.accounts.length === 0) {
+					deletePool(agentDir, KIRO_PROVIDER_ID);
+					throw new Error("Login cancelled");
+				}
+			}
 			break;
 		}
 		// Full logout. The pin and conversation bindings are dropped with the
@@ -175,8 +181,8 @@ async function accountManager(agentDir: string, callbacks: LoginCallbacks): Prom
 				],
 			});
 			if (confirm === "yes") {
-				state = { ...state, accounts: [], bindings: {} };
-				delete (state as { pinned?: string }).pinned;
+				deletePool(agentDir, KIRO_PROVIDER_ID);
+				throw new Error("Login cancelled");
 			}
 			break;
 		}
