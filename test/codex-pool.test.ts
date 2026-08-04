@@ -62,10 +62,9 @@ describe("codex-pool provider registration", () => {
 		expect(typeof config.streamSimple).toBe("function");
 	});
 
-	it("stays opt-in so stock openai-codex remains the default", () => {
+	it("registers by default so the existing pool remains visible in /login", () => {
 		const pkg = codexProviderPackage();
-		expect(pkg.enabled?.({} as NodeJS.ProcessEnv)).toEqual(expect.stringContaining("SENPI_ACCOUNTS_CODEX_POOL"));
-		expect(pkg.enabled?.({ SENPI_ACCOUNTS_CODEX_POOL: "1" } as NodeJS.ProcessEnv)).toBe(true);
+		expect(pkg.enabled).toBeUndefined();
 	});
 
 	it("narrows the catalog via SENPI_ACCOUNTS_CODEX_MODELS", () => {
