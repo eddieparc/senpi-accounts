@@ -285,13 +285,6 @@ export function codexProviderPackage(): ProviderPackage {
 	return {
 		id: CODEX_POOL_PROVIDER_ID,
 		label: "OpenAI Codex (pool)",
-		enabled(env) {
-			// Opt-in: stock `openai-codex` already covers the single-account case,
-			// so this only registers when the user asks for pooling.
-			return env.SENPI_ACCOUNTS_CODEX_POOL === "1"
-				? true
-				: "set SENPI_ACCOUNTS_CODEX_POOL=1 to enable the OpenAI Codex account pool";
-		},
 		build(context: ProviderBuildContext): ProviderConfig {
 			return {
 				name: "OpenAI Codex (pool)",

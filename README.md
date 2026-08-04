@@ -35,9 +35,10 @@ fills only the gaps stock leaves.
 | `/usage` dashboard across every subscription | shipped | this addon |
 | **TokenRouter** provider (117 models behind one key) | **shipped, live-verified** | this addon |
 | **OpenGateway** provider (Kimi K3 Ultrafast) | shipped | this addon |
-| **OpenAI Codex account pool** | experimental, opt-in | this addon |
+| **OpenAI Codex account pool** | experimental, enabled | this addon |
 | Anthropic multi-account | stock | `/claude-account` |
-| Alibaba Token Plan, OpenCode Go | stock | API-key providers |
+| Alibaba Model Studio workspace | validated API-key login | this addon |
+| Alibaba Token Plan, OpenCode Go | stock | plan/API-key providers |
 
 Nothing marked *stock* is reimplemented here; the addon only surfaces it in the usage
 dashboard.
@@ -233,20 +234,39 @@ the account to the pool.
 
 ## Other subscriptions
 
-**Alibaba Token Plan** and **OpenCode Go** are stock providers that authenticate
-with an API key, so they need nothing from this addon:
+Alibaba now has two different key families that cannot share an endpoint:
+
+- Token/Coding Plan keys start with `sk-sp-`. Use stock `alibaba-token-plan`.
+- Workspace pay-as-you-go keys start with `sk-ws-`. Use this addon's
+  `alibaba-model-studio`.
+
+For a workspace key, copy the **OpenAI compatible** endpoint shown next to the
+key in Model Studio, then start senpi with it:
+
+```bash
+export ALIBABA_MODEL_STUDIO_BASE_URL="https://<workspace>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+```
+
+Login through the validated provider:
+
+```text
+/login alibaba-model-studio
+```
+
+The login accepts only `sk-ws-` keys and sends a one-token `qwen-plus` request
+to the configured workspace endpoint before Senpi stores the credential. A
+malformed, revoked, or endpoint-mismatched key is rejected without echoing it.
+
+Stock Token Plan and OpenCode Go remain available separately:
 
 ```
 /login alibaba-token-plan     # or set ALIBABA_TOKEN_PLAN_API_KEY
 /login opencode-go            # or set OPENCODE_API_KEY
 ```
 
-Both appear in `/usage` once configured. Verified state on the development machine:
-`opencode-go` is registered and listed in `/usage` (`configured (API key; no quota
-endpoint)`), but a live completion returns `401 CreditsError: Insufficient balance` — a
-billing state, not an addon fault. `alibaba-token-plan` is **not configured here**, so it
-is unverified end to end; stock already lists its models (`deepseek-v4-pro`, `glm-5.2`,
-`kimi-k2.7-code`, ...), and it needs only the key above.
+Do not put a `sk-ws-` key into `alibaba-token-plan`: the stock plan endpoint
+rejects workspace keys with `401 invalid_api_key`. Likewise, do not use a
+`sk-sp-` plan key with `alibaba-model-studio`.
 
 **Anthropic** multi-account is stock; use `/claude-account`. This addon does not
 touch it.
@@ -311,16 +331,11 @@ limits nor pricing, so the limits mirror Kimi K3 elsewhere in senpi and cost sta
 rather than inventing billing data. Like TokenRouter this is a single-credential
 provider: one metered account, so there is no pool to rotate.
 
-**OpenAI Codex** works out of the box as stock `openai-codex`, and that is the
-recommended path.
+**OpenAI Codex** works out of the box as stock `openai-codex`. The addon's
+existing multi-account `codex-pool` is also registered by default, so it remains
+visible in `/login` without an environment gate.
 
-Pooling several ChatGPT subscriptions is **experimental** in this release and opt-in:
-
-```bash
-export SENPI_ACCOUNTS_CODEX_POOL=1
-```
-
-That registers a `codex-pool` provider which delegates streaming to stock's Codex
+`codex-pool` delegates streaming to stock's Codex
 Responses implementation while adding the same account pool, affinity and failover as
 Kiro. Manage it with `/login codex-pool`.
 

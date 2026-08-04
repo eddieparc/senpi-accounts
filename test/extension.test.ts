@@ -139,6 +139,7 @@ describe("extension entry", () => {
 
 		expect(pi.registered.has("kiro")).toBe(true);
 		expect(pi.registered.has("opengateway")).toBe(true);
+		expect(pi.registered.has("alibaba-model-studio")).toBe(true);
 		const commands = pi.registerCommand.mock.calls.map((call) => call[0]);
 		expect(commands).toContain("usage");
 		expect(commands).toContain("senpi-accounts");
@@ -150,18 +151,15 @@ describe("extension entry", () => {
 });
 
 describe("codex pool provider", () => {
-	it("stays disabled until explicitly opted in", async () => {
+	it("registers by default so it remains visible in /login", async () => {
 		const { codexProviderPackage } = await import("../src/providers/codex/index.js");
 		const pkg = codexProviderPackage();
-		const reason = pkg.enabled?.({} as NodeJS.ProcessEnv);
-		expect(typeof reason).toBe("string");
-		expect(reason).toMatch(/SENPI_ACCOUNTS_CODEX_POOL/);
+		expect(pkg.enabled).toBeUndefined();
 	});
 
-	it("enables when opted in and builds against stock's Codex API", async () => {
+	it("builds against stock's Codex API", async () => {
 		const { codexProviderPackage } = await import("../src/providers/codex/index.js");
 		const pkg = codexProviderPackage();
-		expect(pkg.enabled?.({ SENPI_ACCOUNTS_CODEX_POOL: "1" } as NodeJS.ProcessEnv)).toBe(true);
 
 		const config = await pkg.build({ env: {} as NodeJS.ProcessEnv, agentDir: agentDir() });
 		// Reuses stock's Codex Responses API, which is what keeps /fast and
